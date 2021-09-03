@@ -1,1 +1,2 @@
-# Go-project
+# sqlite
+Golang interface to SQLite
