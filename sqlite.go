@@ -12,6 +12,9 @@ import (
 	"github.com/djthorpe/gopi"
 )
 
+/////////////////////////////////////////////////////////////////////
+// TYPES & INTERFACES
+
 type Type uint
 type Flag uint
 
@@ -20,16 +23,37 @@ type Client interface {
 
 	// Reflect on data structure of a variable to return the rows we expect
 	Reflect(v interface{}) ([]Column, error)
+	PrimaryKey([]Column) (Key, error)
+	//Unique([]Column) ([]Key, error)
+	//Index([]Column) ([]Key, error)
 
-	// Create table
-	CreateTable(table string, columns []Column)
+	// Perform operation and return an error
+	Do(Statement) error
 }
 
 type Column interface {
 	Name() string
+	Identifier() string // Either the name or custom identifier
 	Type() Type
-	Flags() Flag
+	Flag(Flag) bool
+	Value(Flag) string
 }
+
+type Key interface{}
+
+type Statement interface {
+	// CREATE TABLE parameters
+	Schema(string) Statement
+	IfNotExists() Statement
+	Temporary() Statement
+	WithoutRowID() Statement
+
+	// Return SQL string for the statement
+	SQL() string
+}
+
+/////////////////////////////////////////////////////////////////////
+// CONSTANTS
 
 // These are the types we store 'natively' in SQLite
 // in reality, they are converted from the basic types
@@ -43,7 +67,6 @@ const (
 	TYPE_FLOAT
 	TYPE_BLOB
 	TYPE_TIME
-	TYPE_DURATION
 	TYPE_MAX
 )
 
@@ -52,9 +75,12 @@ const (
 const (
 	FLAG_NONE     Flag = 0
 	FLAG_NOT_NULL Flag = (1 << iota)
-	FLAG_UNIQUE
 	FLAG_PRIMARY_KEY
-	FLAG_MAX
+	FLAG_UNIQUE_KEY
+	FLAG_INDEX_KEY
+	FLAG_NAME
+	FLAG_TYPE
+	FLAG_MAX = FLAG_TYPE
 )
 
 /////////////////////////////////////////////////////////////////////
@@ -78,9 +104,26 @@ func (t Type) String() string {
 		return "TYPE_BLOB"
 	case TYPE_TIME:
 		return "TYPE_TIME"
-	case TYPE_DURATION:
-		return "TYPE_DURATION"
 	default:
 		return "[?? Invalid Type value]"
+	}
+}
+
+func (f Flag) String() string {
+	switch f {
+	case FLAG_NOT_NULL:
+		return "FLAG_NOT_NULL"
+	case FLAG_PRIMARY_KEY:
+		return "FLAG_PRIMARY_KEY"
+	case FLAG_UNIQUE_KEY:
+		return "FLAG_UNIQUE_KEY"
+	case FLAG_INDEX_KEY:
+		return "FLAG_INDEX_KEY"
+	case FLAG_NAME:
+		return "FLAG_NAME"
+	case FLAG_TYPE:
+		return "FLAG_TYPE"
+	default:
+		return "[?? Invalid Flag value]"
 	}
 }
