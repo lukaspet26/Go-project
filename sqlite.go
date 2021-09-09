@@ -1,6 +1,6 @@
 /*
 	SQLite client
-	(c) Copyright David Thorpe 2017
+	(c) Copyright David Thorpe 2019
 	All Rights Reserved
 
 	For Licensing and Usage information, please see LICENSE file
@@ -9,15 +9,134 @@
 package sqlite
 
 import (
+	"fmt"
+	"time"
+
+	// Frameworks
 	"github.com/djthorpe/gopi"
 )
 
-/////////////////////////////////////////////////////////////////////
-// TYPES & INTERFACES
+////////////////////////////////////////////////////////////////////////////////
+// INTERFACES
 
-type Type uint
-type Flag uint
+// Database connection
+type Connection interface {
+	gopi.Driver
 
+	// Prepare statement, destroy statement
+	Prepare(string) (Statement, error)
+	Destroy(Statement) error
+
+	// Execute statement (without returning the rows)
+	Do(Statement, ...interface{}) (Result, error)
+	DoOnce(string, ...interface{}) (Result, error)
+
+	// Query to return the rows
+	Query(Statement, ...interface{}) (Rows, error)
+	QueryOnce(string, ...interface{}) (Rows, error)
+
+	// Perform operations within a transaction, rollback on
+	// error
+	Tx(func(Connection) error) error
+
+	// Return sqlite information
+	Version() string
+	Tables() []string
+
+	// Return statements
+	NewColumn(string, string, bool) Column
+	NewCreateTable(string, ...Column) CreateTable
+	NewDropTable(string) DropTable
+	NewInsert(string, ...string) InsertOrReplace
+
+	// Reflect columns from struct
+	Reflect(interface{}) ([]Column, error)
+}
+
+// Statement that can be executed
+type Statement interface {
+	// Return the statement query
+	Query() string
+}
+
+// Return rows
+type Rows interface {
+	// Return column names
+	Columns() []Column
+
+	// Return next row of values, or nil if no more rows
+	Next() []Value
+}
+
+// Return column name and declared type
+type Column interface {
+	Name() string
+	DeclType() string
+	Nullable() bool
+	Query() string
+}
+
+// A row value, which can be a string or int
+type Value interface {
+	DeclType() string     // Return declared type
+	IsNull() bool         // Return true if value is NULL
+	String() string       // Return value as string
+	Int() int64           // Return value as int
+	Uint() uint64         // Return value as uint
+	Bool() bool           // Return value as bool
+	Float() float64       // Return value as float
+	Timestamp() time.Time // Return value as timestamp
+	Bytes() []byte        // Return value as blob
+}
+
+// Result of an insert
+type Result struct {
+	LastInsertId int64
+	RowsAffected uint64
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// STATEMENTS
+
+// CreateTable statement
+type CreateTable interface {
+	Statement
+
+	Schema(string) CreateTable
+	IfNotExists() CreateTable
+	Temporary() CreateTable
+	WithoutRowID() CreateTable
+	PrimaryKey(...string) CreateTable
+	Unique(...string) CreateTable
+}
+
+// DropTable statement
+type DropTable interface {
+	Statement
+
+	Schema(string) DropTable
+	IfExists() DropTable
+}
+
+// Insert statement
+type InsertOrReplace interface {
+	Statement
+
+	Schema(string) InsertOrReplace
+	DefaultValues() InsertOrReplace
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// STRINGIFY
+
+func (r Result) String() string {
+	return fmt.Sprintf("<sqlite.Result>{ LastInsertId=%v RowsAffected=%v }", r.LastInsertId, r.RowsAffected)
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// GRAVEYARD
+
+/*
 type Client interface {
 	gopi.Driver
 
@@ -26,9 +145,6 @@ type Client interface {
 	PrimaryKey([]Column) (Key, error)
 	//Unique([]Column) ([]Key, error)
 	//Index([]Column) ([]Key, error)
-
-	// Perform operation and return an error
-	Do(Statement) error
 }
 
 type Column interface {
@@ -38,37 +154,6 @@ type Column interface {
 	Flag(Flag) bool
 	Value(Flag) string
 }
-
-type Key interface{}
-
-type Statement interface {
-	// CREATE TABLE parameters
-	Schema(string) Statement
-	IfNotExists() Statement
-	Temporary() Statement
-	WithoutRowID() Statement
-
-	// Return SQL string for the statement
-	SQL() string
-}
-
-/////////////////////////////////////////////////////////////////////
-// CONSTANTS
-
-// These are the types we store 'natively' in SQLite
-// in reality, they are converted from the basic types
-// that SQLite stores
-const (
-	TYPE_NONE Type = iota
-	TYPE_TEXT
-	TYPE_INT
-	TYPE_UINT
-	TYPE_BOOL
-	TYPE_FLOAT
-	TYPE_BLOB
-	TYPE_TIME
-	TYPE_MAX
-)
 
 // These are various flags we use to modify when
 // a table is created
@@ -82,48 +167,4 @@ const (
 	FLAG_TYPE
 	FLAG_MAX = FLAG_TYPE
 )
-
-/////////////////////////////////////////////////////////////////////
-// STRINGIFY
-
-func (t Type) String() string {
-	switch t {
-	case TYPE_NONE:
-		return "TYPE_NONE"
-	case TYPE_TEXT:
-		return "TYPE_TEXT"
-	case TYPE_INT:
-		return "TYPE_INT"
-	case TYPE_UINT:
-		return "TYPE_UINT"
-	case TYPE_BOOL:
-		return "TYPE_BOOL"
-	case TYPE_FLOAT:
-		return "TYPE_FLOAT"
-	case TYPE_BLOB:
-		return "TYPE_BLOB"
-	case TYPE_TIME:
-		return "TYPE_TIME"
-	default:
-		return "[?? Invalid Type value]"
-	}
-}
-
-func (f Flag) String() string {
-	switch f {
-	case FLAG_NOT_NULL:
-		return "FLAG_NOT_NULL"
-	case FLAG_PRIMARY_KEY:
-		return "FLAG_PRIMARY_KEY"
-	case FLAG_UNIQUE_KEY:
-		return "FLAG_UNIQUE_KEY"
-	case FLAG_INDEX_KEY:
-		return "FLAG_INDEX_KEY"
-	case FLAG_NAME:
-		return "FLAG_NAME"
-	case FLAG_TYPE:
-		return "FLAG_TYPE"
-	default:
-		return "[?? Invalid Flag value]"
-	}
-}
+*/
