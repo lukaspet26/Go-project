@@ -9,11 +9,21 @@
 package sqlite
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
 	// Frameworks
 	"github.com/djthorpe/gopi"
+)
+
+////////////////////////////////////////////////////////////////////////////////
+// ERRORS
+
+var (
+	ErrUnsupportedType = errors.New("Unsupported type")
+	ErrInvalidDate     = errors.New("Invalid date")
+	ErrNotFound        = errors.New("Not Found")
 )
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -24,9 +34,6 @@ type Connection interface {
 	gopi.Driver
 	Statements
 
-	// Free statement resources
-	Destroy(Statement) error
-
 	// Execute statement (without returning the rows)
 	Do(Statement, ...interface{}) (Result, error)
 	DoOnce(string, ...interface{}) (Result, error)
@@ -35,17 +42,23 @@ type Connection interface {
 	Query(Statement, ...interface{}) (Rows, error)
 	QueryOnce(string, ...interface{}) (Rows, error)
 
+	// Free statement resources
+	Destroy(Statement) error
+
 	// Perform operations within a transaction, rollback on error
 	Tx(func(Connection) error) error
 
 	// Return sqlite information
 	Version() string
+	Schemas() []string
 	Tables() []string
-	//Tables(schema string, include_temporary bool) []string
+	TablesEx(schema string, include_temporary bool) []string
 	ColumnsForTable(name, schema string) ([]Column, error)
 
-	// Reflect columns from struct
-	Reflect(interface{}) ([]Column, error)
+	// Attach and detach other databases, schema cannot be
+	// 'main' or 'temp'
+	Attach(schema, dsn string) error
+	Detach(schema string) error
 }
 
 type Statements interface {
@@ -58,6 +71,7 @@ type Statements interface {
 
 	// Return table column and data source
 	NewColumn(name, decltype string, nullable, primary bool) Column
+	NewColumnWithIndex(name, decltype string, nullable, primary bool, index int) Column
 	NewSource(name string) Source
 
 	// Return expressions
@@ -86,6 +100,7 @@ type Column interface {
 	DeclType() string
 	Nullable() bool
 	PrimaryKey() bool
+	Index() int
 	Query() string
 }
 

@@ -42,7 +42,7 @@ func Test_004(t *testing.T) {
 	} else {
 		driver_ := driver.(sq.Connection)
 		defer driver_.Close()
-		if tables := driver_.Tables(); tables == nil {
+		if tables := driver_.TablesEx("", false); tables == nil {
 			t.Error("Expected Tables to return empty slice")
 		}
 	}
@@ -56,7 +56,7 @@ func Test_005(t *testing.T) {
 		defer driver_.Close()
 		if _, err := driver_.DoOnce("CREATE TABLE test (a,b)"); err != nil {
 			t.Error("Expected Tables to return empty slice")
-		} else if tables := driver_.Tables(); tables == nil {
+		} else if tables := driver_.TablesEx("", false); tables == nil {
 			t.Error("Expected Tables to return empty slice")
 		} else if len(tables) != 1 {
 			t.Error("Expected Tables to return a single value")
@@ -74,7 +74,7 @@ func Test_006(t *testing.T) {
 		defer driver_.Close()
 		if _, err := driver_.DoOnce("CREATE TABLE test (a,b); CREATE TABLE test2 (c,d)"); err != nil {
 			t.Error("Expected Tables to return empty slice")
-		} else if tables := driver_.Tables(); tables == nil {
+		} else if tables := driver_.TablesEx("", false); tables == nil {
 			t.Error("Expected Tables to return empty slice")
 		} else if len(tables) != 2 {
 			t.Error("Expected Tables to return a single value")
@@ -245,6 +245,50 @@ func Test_012(t *testing.T) {
 				}
 				t.Log(sq.RowString(row))
 			}
+		}
+	}
+}
+
+func Test_013(t *testing.T) {
+	if driver, err := gopi.Open(sqlite.Config{}, nil); err != nil {
+		t.Error(err)
+	} else {
+		driver_ := driver.(sq.Connection)
+		defer driver_.Close()
+		if schemas := driver_.Schemas(); schemas == nil {
+			t.Fail()
+		} else {
+			t.Log(schemas)
+		}
+	}
+}
+
+func Test_014(t *testing.T) {
+	if driver, err := gopi.Open(sqlite.Config{}, nil); err != nil {
+		t.Error(err)
+	} else {
+		driver_ := driver.(sq.Connection)
+		defer driver_.Close()
+		if _, err := driver_.DoOnce("CREATE TEMPORARY TABLE test (a integer)"); err != nil {
+			t.Error(err)
+		} else if schemas := driver_.Schemas(); schemas == nil {
+			t.Fail()
+		} else if schemas[0] != "main" {
+			t.Fail()
+		} else if schemas[1] != "temp" {
+			t.Fail()
+		} else if tables := driver_.TablesEx("", false); tables == nil {
+			t.Fail()
+		} else if len(tables) != 0 {
+			t.Fail()
+		} else if tables := driver_.TablesEx("temp", false); tables == nil {
+			t.Fail()
+		} else if len(tables) != 1 || tables[0] != "test" {
+			t.Fail()
+		} else if tables := driver_.TablesEx("", true); tables == nil {
+			t.Fail()
+		} else if len(tables) != 1 || tables[0] != "test" {
+			t.Fail()
 		}
 	}
 }
@@ -491,142 +535,5 @@ func Test_Query_021(t *testing.T) {
 			t.Log(statement.Query(driver_))
 		}
 
-	}
-}
-
-func Test_Reflect_001(t *testing.T) {
-	if driver, err := gopi.Open(sqlite.Config{}, nil); err != nil {
-		t.Error(err)
-	} else {
-		driver_ := driver.(sq.Connection)
-		defer driver_.Close()
-
-		if columns, err := driver_.Reflect(struct{}{}); err != nil {
-			t.Error(err)
-		} else {
-			t.Log(columns)
-		}
-	}
-}
-
-func Test_Reflect_002(t *testing.T) {
-	if driver, err := gopi.Open(sqlite.Config{}, nil); err != nil {
-		t.Error(err)
-	} else {
-		driver_ := driver.(sq.Connection)
-		defer driver_.Close()
-
-		if columns, err := driver_.Reflect(struct{ a int }{}); err != nil {
-			t.Error(err)
-		} else if len(columns) != 0 {
-			t.Error("Expected zero returned columns")
-		}
-
-		if columns, err := driver_.Reflect(struct{ A int }{}); err != nil {
-			t.Error(err)
-		} else if len(columns) != 1 {
-			t.Error("Expected one returned columns")
-		} else {
-			t.Log(columns)
-		}
-
-		if columns, err := driver_.Reflect(struct{ A, B int }{}); err != nil {
-			t.Error(err)
-		} else if len(columns) != 2 {
-			t.Error("Expected two returned columns")
-		} else {
-			t.Log(columns)
-		}
-
-		if columns, err := driver_.Reflect(struct {
-			A int `sql:"test"`
-		}{}); err != nil {
-			t.Error(err)
-		} else if len(columns) != 1 {
-			t.Error("Expected two returned columns", columns)
-		} else if columns[0].Name() != "test" {
-			t.Error("Expected column name 'test'", columns)
-		} else {
-			t.Log(columns)
-		}
-
-		if columns, err := driver_.Reflect(struct {
-			A int `sql:",nullable"`
-		}{}); err != nil {
-			t.Error(err)
-		} else if len(columns) != 1 {
-			t.Error("Expected one returned columns", columns)
-		} else if columns[0].Name() != "A" {
-			t.Error("Expected column name 'A'", columns)
-		} else if columns[0].Nullable() != true {
-			t.Error("Expected column nullable", columns)
-		} else {
-			t.Log(columns)
-		}
-
-		if columns, err := driver_.Reflect(struct {
-			A string `sql:"TEST WITH SPACES,nullable,bool"`
-		}{}); err != nil {
-			t.Error(err)
-		} else if len(columns) != 1 {
-			t.Error("Expected one returned column", columns)
-		} else if columns[0].Name() != "TEST WITH SPACES" {
-			t.Error("Expected column name 'TEST WITH SPACES'", columns)
-		} else if columns[0].Nullable() != true {
-			t.Error("Expected column nullable", columns)
-		} else if columns[0].DeclType() != "BOOL" {
-			t.Error("Expected column type BOOL", columns)
-		} else {
-			t.Log(columns)
-		}
-
-	}
-}
-
-func Test_Reflect_003(t *testing.T) {
-	if driver, err := gopi.Open(sqlite.Config{}, nil); err != nil {
-		t.Error(err)
-	} else {
-		driver_ := driver.(sq.Connection)
-		defer driver_.Close()
-
-		if columns, err := driver_.Reflect(struct {
-			A int `sql:"test,primary"`
-		}{}); err != nil {
-			t.Error(err)
-		} else if len(columns) != 1 {
-			t.Error("Expected two returned columns", columns)
-		} else if columns[0].Name() != "test" {
-			t.Error("Expected column name 'test'", columns)
-		} else if columns[0].PrimaryKey() != true {
-			t.Error("Expected column 'test' with primary key", columns)
-		} else {
-			t.Log(columns)
-		}
-
-		if columns, err := driver_.Reflect(struct {
-			A int `sql:"a,primary"`
-			B int `sql:"b,primary,nullable"`
-		}{}); err != nil {
-			t.Error(err)
-		} else if len(columns) != 2 {
-			t.Error("Expected two returned columns", columns)
-		} else if columns[0].Name() != "a" {
-			t.Error("Expected column name 'a'", columns)
-		} else if columns[0].PrimaryKey() != true {
-			t.Error("Expected column 'b' with primary key", columns)
-		} else if columns[1].Name() != "b" {
-			t.Error("Expected column name 'b'", columns)
-		} else if columns[1].PrimaryKey() != true {
-			t.Error("Expected column 'b' with primary key", columns)
-		} else if create := driver_.NewCreateTable("test", columns...); create == nil {
-			t.Fail()
-		} else if query := create.Query(driver_); query == "" {
-			t.Fail()
-		} else if query != "CREATE TABLE test (a INTEGER NOT NULL,b INTEGER,PRIMARY KEY (a,b))" {
-			t.Errorf("Unexpected query %v", query)
-		} else {
-			t.Log(query)
-		}
 	}
 }
