@@ -14,16 +14,20 @@ import (
 	"strconv"
 
 	// Frameworks
-	"github.com/djthorpe/gopi"
+
 	sq "github.com/djthorpe/sqlite"
 )
 
 ////////////////////////////////////////////////////////////////////////////////
 // PUBLIC METHODS
 
-func (this *sqobj) NewClass(name string, columns []sq.Column) *sqclass {
-	class := &sqclass{name, columns, nil, this.conn, this.log}
-	if class.insert = this.conn.NewInsert(name); class.insert == nil {
+func (this *sqobj) NewClass(name, pkgpath string, object bool, columns []sq.Column) *sqclass {
+	class := &sqclass{name, pkgpath, object, columns, this.conn, this.log, nil, nil, nil}
+	if class.insert = this.lang.Insert(name, class.ColumnNames()...); class.insert == nil {
+		return nil
+	} else if class.replace = this.lang.Replace(name, class.ColumnNames()...); class.replace == nil {
+		return nil
+	} else if class.update = this.lang.NewUpdate(name, class.ColumnNames()...).Where(this.lang.Equals("_rowid_", this.lang.Arg())); class.update == nil {
 		return nil
 	} else {
 		return class
@@ -34,19 +38,12 @@ func (this *sqclass) Name() string {
 	return this.name
 }
 
-func (this *sqclass) Insert(v interface{}) (int64, error) {
-	var rowid int64
-	err := this.conn.Tx(func(txn sq.Connection) error {
-		if args := this.BoundArgs(v); args == nil {
-			return gopi.ErrBadParameter
-		} else if result, err := txn.Do(this.insert, args...); err != nil {
-			return err
-		} else {
-			rowid = result.LastInsertId
-			return nil
-		}
-	})
-	return rowid, err
+func (this *sqclass) ColumnNames() []string {
+	names := make([]string, len(this.columns))
+	for i, column := range this.columns {
+		names[i] = column.Name()
+	}
+	return names
 }
 
 func (this *sqclass) BoundArgs(v interface{}) []interface{} {
@@ -68,9 +65,22 @@ func (this *sqclass) BoundArgs(v interface{}) []interface{} {
 	return values
 }
 
+func (this *sqclass) statement(flags sq.Flag, v interface{}) (sq.Statement, []interface{}) {
+	switch {
+	case flags&(sq.FLAG_INSERT|sq.FLAG_UPDATE) == sq.FLAG_INSERT:
+		return this.insert, this.BoundArgs(v)
+	case flags&(sq.FLAG_INSERT|sq.FLAG_UPDATE) == sq.FLAG_INSERT|sq.FLAG_UPDATE:
+		return this.replace, this.BoundArgs(v)
+	case flags&(sq.FLAG_INSERT|sq.FLAG_UPDATE) == sq.FLAG_UPDATE:
+		return this.update, this.BoundArgs(v)
+	default:
+		return nil, nil
+	}
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // STRINGIFY
 
 func (this *sqclass) String() string {
-	return fmt.Sprintf("<sqobj.Class>{ name=%v }", strconv.Quote(this.name))
+	return fmt.Sprintf("<sqobj.Class>{ name=%v is_object=%v }", strconv.Quote(this.name), this.object)
 }
