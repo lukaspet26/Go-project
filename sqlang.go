@@ -1,126 +1,189 @@
-/*
-	SQLite client
-	(c) Copyright David Thorpe 2019
-	All Rights Reserved
-
-	For Licensing and Usage information, please see LICENSE file
-*/
-
 package sqlite
 
-import (
-	"github.com/djthorpe/gopi"
-)
-
-////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
 // INTERFACES
 
-// Language component to build statements
-type Language interface {
-	gopi.Driver
-
-	// Create
-	NewCreateTable(string, ...Column) CreateTable
-	NewCreateIndex(string, string, ...string) CreateIndex
-
-	// Drop
-	DropTable(string) Drop
-	DropIndex(string) Drop
-	DropTrigger(string) Drop
-	DropView(string) Drop
-
-	// Insert, replace and update
-	Insert(string, ...string) InsertOrReplace
-	Replace(string, ...string) InsertOrReplace
-	NewDelete(string) Delete
-	NewUpdate(string, ...string) Update
-
-	// Select
-	NewSelect(Source) Select
-
-	// Return named data source
-	NewSource(name string) Source
-
-	// Build expressions
-	Null() Expression
-	Arg() Expression
-	Value(interface{}) Expression
-	Equals(string, Expression) Expression
-	NotEquals(string, Expression) Expression
-	And(...Expression) Expression
-	Or(...Expression) Expression
-}
-
-// Source represents a simple table source (schema, name and table alias)
-type Source interface {
-	Statement
-
-	Schema(string) Source
-	Alias(string) Source
-}
-
-// Expression represents an expression used in Select
-type Expression interface {
+// SQStatement is any statement which can be prepared or executed
+type SQStatement interface {
 	Query() string
 }
 
-// CreateTable statement
-type CreateTable interface {
-	Statement
+// SQSource defines a table or column name
+type SQSource interface {
+	SQStatement
+	SQExpr
 
-	Schema(string) CreateTable
-	IfNotExists() CreateTable
-	Temporary() CreateTable
-	WithoutRowID() CreateTable
-	Unique(...string) CreateTable
+	// Return name, schema, type
+	Name() string
+	Schema() string
+	Alias() string
+
+	// Modify the source
+	WithName(string) SQSource
+	WithSchema(string) SQSource
+	WithType(string) SQColumn
+	WithAlias(string) SQSource
+	WithDesc() SQSource
+
+	// Insert, replace or upsert a row with named columns
+	Insert(...string) SQInsert
+	Replace(...string) SQInsert
+
+	// Drop objects
+	DropTable() SQDrop
+	DropIndex() SQDrop
+	DropTrigger() SQDrop
+	DropView() SQDrop
+
+	// Create objects
+	CreateTable(...SQColumn) SQTable
+	CreateVirtualTable(string, ...string) SQIndexView
+	CreateIndex(string, ...string) SQIndexView
+	//CreateView(SQSelect, ...string) SQIndexView
+	ForeignKey(...string) SQForeignKey
+
+	// Alter objects
+	AlterTable() SQAlter
+
+	// Update and delete data
+	Update(...string) SQUpdate
+	Delete(...interface{}) SQStatement
 }
 
-// CreateIndex statement
-type CreateIndex interface {
-	Statement
+// SQTable defines a table of columns and indexes
+type SQTable interface {
+	SQStatement
 
-	Schema(string) CreateIndex
-	Unique() CreateIndex
-	IfNotExists() CreateIndex
+	IfNotExists() SQTable
+	WithTemporary() SQTable
+	WithoutRowID() SQTable
+	WithIndex(...string) SQTable
+	WithUnique(...string) SQTable
+	WithForeignKey(SQForeignKey, ...string) SQTable
 }
 
-// Drop (table,index,trigger,view) statement
-type Drop interface {
-	Statement
+// SQUpdate defines an update statement
+type SQUpdate interface {
+	SQStatement
 
-	Schema(string) Drop
-	IfExists() Drop
+	// Modifiers
+	WithAbort() SQUpdate
+	WithFail() SQUpdate
+	WithIgnore() SQUpdate
+	WithReplace() SQUpdate
+	WithRollback() SQUpdate
+
+	// Where clause
+	Where(...interface{}) SQUpdate
 }
 
-// Delete statement
-type Delete interface {
-	Statement
+// SQIndexView defines a create index or view statement
+type SQIndexView interface {
+	SQStatement
+	SQSource
 
-	Schema(string) Delete
-	Where(Expression) Delete
+	// Return properties
+	Unique() bool
+	Table() string
+	Columns() []string
+	Auto() bool
+
+	// Modifiers
+	IfNotExists() SQIndexView
+	WithTemporary() SQIndexView
+	WithUnique() SQIndexView
+	WithAuto() SQIndexView
 }
 
-// InsertOrReplace represents an insert or replace
-type InsertOrReplace interface {
-	Statement
+// SQDrop defines a drop for tables, views, indexes, and triggers
+type SQDrop interface {
+	SQStatement
 
-	Schema(string) InsertOrReplace
-	DefaultValues() InsertOrReplace
+	IfExists() SQDrop
 }
 
-// Update represents an update
-type Update interface {
-	Statement
+// SQInsert defines an insert or replace statement
+type SQInsert interface {
+	SQStatement
 
-	Schema(string) Update
-	Where(Expression) Update
+	DefaultValues() SQInsert
+	WithConflictDoNothing(...string) SQInsert
+	WithConflictUpdate(...string) SQInsert
 }
 
-// Select statement
-type Select interface {
-	Statement
+// SQSelect defines a select statement
+type SQSelect interface {
+	SQStatement
 
-	Distinct() Select
-	Where(...Expression) Select
-	LimitOffset(uint, uint) Select
+	// Set select flags
+	WithDistinct() SQSelect
+	WithLimitOffset(limit, offset uint) SQSelect
+
+	// Destination columns for results
+	To(...SQSource) SQSelect
+
+	// Where and order clauses
+	Where(...interface{}) SQSelect
+	Order(...SQSource) SQSelect
 }
+
+// SQAlter defines an alter table statement
+type SQAlter interface {
+	SQStatement
+
+	// Alter operation
+	AddColumn(SQColumn) SQStatement
+	DropColumn(SQColumn) SQStatement
+}
+
+// SQForeignKey represents a foreign key constraint
+type SQForeignKey interface {
+	// Modifiers
+	OnDeleteCascade() SQForeignKey
+}
+
+// SQColumn represents a column definition
+type SQColumn interface {
+	SQStatement
+
+	// Properties
+	Name() string
+	Type() string
+	Nullable() bool
+	Primary() string
+
+	// Modifiers
+	NotNull() SQColumn
+	WithType(string) SQColumn
+	WithAlias(string) SQSource
+	WithPrimary() SQColumn
+	WithAutoIncrement() SQColumn
+	WithDefault(v interface{}) SQColumn
+	WithDefaultNow() SQColumn
+}
+
+// SQExpr defines any expression
+type SQExpr interface {
+	SQStatement
+
+	// And, Or, Not
+	Or(interface{}) SQExpr
+
+	// Comparison expression with one or more right hand side expressions
+	//Is(SQExpr, ...SQExpr) SQComparison
+}
+
+// SQComparison defines a comparison between two expressions
+type SQComparison interface {
+	SQStatement
+
+	// Negate the comparison
+	Not() SQComparison
+}
+
+/*
+	Gt() SQComparison
+	GtEq() SQComparison
+	Lt() SQComparison
+	LtEq() SQComparison
+*/

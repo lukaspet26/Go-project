@@ -1,72 +1,122 @@
-/*
-	SQLite client
-	(c) Copyright David Thorpe 2019
-	All Rights Reserved
-
-	For Licensing and Usage information, please see LICENSE file
-*/
-
 package sqlite
 
-import (
-	"fmt"
+import "strings"
 
-	// Frameworks
-	"github.com/djthorpe/gopi"
-)
+///////////////////////////////////////////////////////////////////////////////
+// TYPES
 
-////////////////////////////////////////////////////////////////////////////////
+type SQFlag uint
+type SQKey uint
+type SQWriteHook func(SQResults, interface{}) error
+
+///////////////////////////////////////////////////////////////////////////////
 // INTERFACES
 
-type Flag uint
+// SQObjects is an sqlite connection but adds ability to read, write and delete
+type SQObjects interface {
+	SQConnection
 
-type Objects interface {
-	gopi.Driver
+	// Create classes with named database and modification flags
+	Create(string, SQFlag, ...SQClass) error
 
-	// RegisterStruct registers a struct against a database table
-	RegisterStruct(interface{}) (StructClass, error)
+	// Write objects to database
+	Write(v ...interface{}) ([]SQResults, error)
 
-	// ReflectStruct returns SQL table columns from a struct
-	ReflectStruct(v interface{}) ([]Column, error)
+	// Read objects from database
+	Read(SQClass) (SQIterator, error)
 
-	// Insert, replace and update structs, rollback on error
-	// and return number of affected rows
-	Write(Flag, ...interface{}) (uint64, error)
+	// Write objects to database, call hook after each write
+	WriteWithHook(SQWriteHook, ...interface{}) ([]SQResults, error)
 
-	// Delete structs  or by rowid, rollback on error
-	// and return number of affected rows
-	Delete(...interface{}) (uint64, error)
+	// Delete objects from the database
+	Delete(v ...interface{}) ([]SQResults, error)
 }
 
-type Class interface {
-	// Return name of the class
-	Name() string
+// SQClass is a class definition, which can be a table or view
+type SQClass interface {
+	// Create class in the named database with modification flags
+	Create(SQConnection, string, SQFlag) error
+
+	// Read all objects from the class and return the iterator
+	// TODO: Need sort, filter, limit, offset
+	Read(SQConnection) (SQIterator, error)
+
+	// Insert objects, return rowids
+	Insert(SQConnection, ...interface{}) ([]SQResults, error)
+
+	// Update objects by primary key, return rowids
+	Update(SQConnection, ...interface{}) ([]SQResults, error)
+
+	// Upsert objects by primary key, return rowids
+	Upsert(SQConnection, ...interface{}) ([]SQResults, error)
+
+	// Delete objects from the database by primary key
+	Delete(SQConnection, ...interface{}) ([]SQResults, error)
+
+	// Set a foreign key reference to parent class and columns. Panic
+	// on error, and return same class
+	ForeignKey(SQClass, ...string) SQClass
 }
 
-type StructClass interface {
-	Class
+// SQIterator is an iterator for a Read operation
+type SQIterator interface {
+	// Next returns the next object in the iterator, or nil if there are no more
+	Next() interface{}
+
+	// RowId returns the last read row, should be called after Next()
+	RowId() int64
+
+	// Close releases any resources associated with the iterator
+	Close() error
 }
 
-type Object struct {
-	RowId int64
-}
-
-////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
 // CONSTANTS
 
 const (
-	FLAG_INSERT Flag = (1 << iota)
-	FLAG_UPDATE
-	FLAG_NONE Flag = 0
+	// Create flags
+	SQLITE_FLAG_DELETEIFEXISTS SQFlag = 1 << iota // Delete existing database objects if they already exist
+	SQLITE_FLAG_UPDATEONINSERT                    // Update existing object if a unique constraint fails
+
+	// Other constants
+	SQLITE_FLAG_NONE SQFlag = 0
+	SQLITE_FLAG_MIN         = SQLITE_FLAG_DELETEIFEXISTS
+	SQLITE_FLAG_MAX         = SQLITE_FLAG_UPDATEONINSERT
 )
 
-////////////////////////////////////////////////////////////////////////////////
+const (
+	SQKeyNone SQKey = iota
+	SQKeyInsert
+	SQKeySelect
+	SQKeyWrite
+	SQKeyDelete
+	SQKeyGetRowId
+	SQKeyMax
+)
+
+///////////////////////////////////////////////////////////////////////////////
 // STRINGIFY
 
-func (this *Object) String() string {
-	if this.RowId == 0 {
-		return fmt.Sprintf("<sqobj.Object>{ <new> }")
-	} else {
-		return fmt.Sprintf("<sqobj.Object>{ rowid=%v }", this.RowId)
+func (f SQFlag) String() string {
+	if f == SQLITE_FLAG_NONE {
+		return f.FlagString()
+	}
+	str := ""
+	for v := SQLITE_FLAG_MIN; v <= SQLITE_FLAG_MAX; v <<= 1 {
+		if f&v == v {
+			str += v.FlagString() + "|"
+		}
+	}
+	return strings.TrimSuffix(str, "|")
+}
+
+func (v SQFlag) FlagString() string {
+	switch v {
+	case SQLITE_FLAG_NONE:
+		return "SQLITE_FLAG_NONE"
+	case SQLITE_FLAG_DELETEIFEXISTS:
+		return "SQLITE_FLAG_DELETEIFEXISTS"
+	default:
+		return "[?? Invalid SQFlag]"
 	}
 }
