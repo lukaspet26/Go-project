@@ -12,8 +12,7 @@ var (
 	sqLiteDriver        = &driver.SQLiteDriver{}
 	sqLiteVersion, _, _ = driver.Version()
 	sqLiteMemory        = ":memory:"
-	sqLiteDefaultSchema = "main"
-	sqLiteTempSchema    = "temp"
+	sqLiteStructTag     = "sqlite"
 )
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -22,3 +21,6 @@ var (
 func Version() string {
 	return sqLiteVersion
 }
+
+///////////////////////////////////////////////////////////////////////////////
+// LIFECYCLE

@@ -2,9 +2,10 @@ package sqlite
 
 import (
 	sql "database/sql/driver"
+	"io"
 
 	// Modules
-
+	marshaler "github.com/djthorpe/go-marshaler"
 	sqlite "github.com/djthorpe/go-sqlite"
 	driver "github.com/mattn/go-sqlite3"
 )
@@ -16,8 +17,6 @@ type resultset struct {
 	r       *driver.SQLiteRows
 	columns []string
 	values  []sql.Value
-	array   []interface{}
-	zipped  map[string]interface{}
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -25,50 +24,60 @@ type resultset struct {
 
 func NewRows(r *driver.SQLiteRows) sqlite.SQRows {
 	this := new(resultset)
-	this.r = r
-	this.columns = r.Columns()
-	// pre-allocate values, array and map return values
-	this.values = make([]sql.Value, len(this.columns))
-	this.array = make([]interface{}, len(this.columns))
-	this.zipped = make(map[string]interface{}, len(this.columns))
-	// return success
+	if r == nil {
+		return nil
+	} else {
+		this.r = r
+		this.columns = r.Columns()
+		this.values = make([]sql.Value, len(this.columns))
+	}
+
+	// Return success
 	return this
 }
 
 func (this *resultset) Close() error {
-	this.zipped = nil
 	this.values = nil
-	this.array = nil
-	this.columns = nil
 	return this.r.Close()
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // PUBLIC METHODS
 
-func (this *resultset) Next() []interface{} {
-	if this.values == nil {
+func (this *resultset) Next(v interface{}) error {
+	r := this.NextMap()
+	if r == nil {
+		return io.EOF
+	} else if err := marshaler.UnmarshalStruct(r, v, sqLiteStructTag, nil); err != nil {
+		return err
+	} else {
 		return nil
-	} else if err := this.r.Next(this.values); err != nil {
+	}
+}
+
+func (this *resultset) NextMap() map[string]interface{} {
+	v := this.NextArray()
+	if v == nil {
+		return nil
+	}
+	m := make(map[string]interface{}, len(v))
+	for i := range v {
+		m[this.columns[i]] = v[i]
+	}
+	return m
+}
+
+func (this *resultset) NextArray() []interface{} {
+	if err := this.r.Next(this.values); err != nil {
 		this.Close()
 		return nil
 	} else if len(this.values) == 0 {
 		this.Close()
 		return nil
-	} else {
-		for i, v := range this.values {
-			this.array[i] = v
-		}
-		return this.array
 	}
-}
-
-func (this *resultset) NextMap() map[string]interface{} {
-	if v := this.Next(); v == nil {
-		return nil
+	r := make([]interface{}, len(this.values))
+	for i := range this.values {
+		r[i] = this.values[i]
 	}
-	for i, k := range this.columns {
-		this.zipped[k] = this.values[i]
-	}
-	return this.zipped
+	return r
 }

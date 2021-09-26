@@ -1,250 +1,156 @@
 package sqlite
 
-import (
-	"context"
-	"reflect"
-	"strings"
-)
-
-const (
-	// TagName defines the tag name used for struct tags
-	TagName = "sqlite"
-)
-
 ///////////////////////////////////////////////////////////////////////////////
-// TYPES
-
-type (
-	SQAuthFlag uint
-	SQTxnFlag  uint
-)
-
-///////////////////////////////////////////////////////////////////////////////
-// INTERFACES
-
-// SQPool is an sqlite connection pool
-type SQPool interface {
-	// Close waits for all connections to be released and then releases resources
-	Close() error
-
-	// Get a connection from the pool, and return it to the pool when the context
-	// is cancelled or it is put back using the Put method. If there are no
-	// connections available or an error occurs, nil is returned.
-	Get(context.Context) SQConnection
-
-	// Return connection to the pool
-	Put(SQConnection)
-
-	// Cur returns the current number of used connections
-	Cur() int32
-
-	// Max returns the maximum number of connections allowed
-	Max() int32
-
-	// SetMax allowed connections released from pool. Note this does not change
-	// the maximum instantly, it will settle to this value over time. Set as value
-	// zero to disable opening new connections
-	SetMax(int32)
-}
+// INTERFACES - CONNECTION
 
 // SQConnection is an sqlite connection to one or more databases
 type SQConnection interface {
-	//SQTransaction
-
-	// Execute a transaction with context, rollback on any errors
-	// or cancelled context
-	Do(context.Context, SQTxnFlag, func(SQTransaction) error) error
+	SQTransaction
+	SQLanguage
 
 	// Schemas returns a list of all the schemas in the database
 	Schemas() []string
 
-	// Tables returns a list of tables in a schema
-	Tables(string) []string
+	// Table returns a list of non-temporary tables in the default schema
+	Tables() []string
 
-	// Count returns the number of rows in a table and schema
-	Count(string, string) int64
+	// TablesEx returns a list of tables in the specified schema. Pass true
+	// as second argument to include temporary tables.
+	TablesEx(string, bool) []string
 
-	// Filename returns a filename for a schema, returns empty
-	// string if in-memory database
-	Filename(string) string
+	// ColumnsEx returns an ordered list of columns in the specified table
+	Columns(string) []SQColumn
 
-	// ColumnsForTable returns the columns in a schema and table
-	ColumnsForTable(string, string) []SQColumn
+	// ColumnsEx returns an ordered list of columns in the specified table and schema
+	ColumnsEx(string, string) []SQColumn
 
-	// ColumnsForIndex returns the column names associated with schema and index
-	ColumnsForIndex(string, string) []string
+	// Attach with schema name to a database at path in second argument
+	Attach(string, string) error
 
-	// IndexesForTable returns the indexes associated with a schema and table
-	IndexesForTable(string, string) []SQIndexView
+	// Detach database by schema name
+	Detach(string) error
 
-	// Views returns a list of view names in a schema
-	Views(string) []string
+	// Create transaction block
+	Do(func(SQTransaction) error) error
 
-	// Modules returns a list of modules. If an argument is
-	// provided, then only modules with those name prefixes
-	// matched
-	Modules(...string) []string
+	// Close
+	Close() error
+}
+
+// SQLanguage defines the interface for SQLite language
+type SQLanguage interface {
+	// Q creates a statement from a string
+	Q(string) SQStatement
+
+	// CreateTable creates a table with name and specified columns
+	CreateTable(string, ...SQColumn) SQTable
+
+	// CreateIndex with a source table name and defined column names
+	CreateIndex(string, ...string) SQIndex
+
+	// Column with name and declared type
+	Column(string, string) SQColumn
+
+	// DropTable with name
+	DropTable(string) SQDrop
+
+	// DropIndex with name
+	DropIndex(string) SQDrop
+
+	// DropTrigger with name
+	DropTrigger(string) SQDrop
+
+	// DropView with name
+	DropView(string) SQDrop
+
+	// Insert values into a table with a name and defined column names
+	Insert(string, ...string) SQInsert
+
+	// Replace values into a table with a name and defined column names
+	Replace(string, ...string) SQInsert
 }
 
 // SQTransaction is an sqlite transaction
 type SQTransaction interface {
 	// Query and return a set of results
-	Query(SQStatement, ...interface{}) (SQResults, error)
+	Query(SQStatement, ...interface{}) (SQRows, error)
+
+	// Execute a statement and return affected rows
+	Exec(SQStatement, ...interface{}) (SQResult, error)
 }
 
-// SQResults increments over returned rows from a query
-type SQResults interface {
-	// Return next row, returns nil when all rows consumed
-	// if types are provided, then returned row is cast to
-	// appopriate types. The returned row needs to be copied
-	// if not transient
-	Next(...reflect.Type) ([]interface{}, error)
+// SQRows increments over returned rows from a query
+type SQRows interface {
+	// Return next row, returns io.EOF when all rows consumed
+	Next(v interface{}) error
 
 	// Return next map of values, or nil if no more rows
-	//NextMap() map[string]interface{}
+	NextMap() map[string]interface{}
 
-	// NextQuery executes the next query or returns io.EOF
-	NextQuery(...interface{}) error
+	// Return next array of values, or nil if no more rows
+	NextArray() []interface{}
 
-	// Return the SQL for the last statement
-	ExpandedSQL() string
-
-	// Return Last RowID inserted of last statement
-	LastInsertId() int64
-
-	// Return number of changes made of last statement
-	RowsAffected() int
-
-	// Columns returns the column definitions
-	Columns() []SQColumn
-
-	// ColumnTable returns the schema, table and column name for a column index
-	ColumnSource(int) (string, string, string)
+	// Close the rows, and free up any resources
+	Close() error
 }
 
-// SQAuth is an interface for authenticating an action
-type SQAuth interface {
-	// CanSelect is called to authenticate a SELECT
-	CanSelect(context.Context) error
-
-	// CanTransaction is called for BEGIN, COMMIT, or ROLLBACK
-	CanTransaction(context.Context, SQAuthFlag) error
-
-	// CanExec is called to authenticate an operation other then SELECT
-	CanExec(context.Context, SQAuthFlag, string, ...string) error
+// SQResult is returned after SQTransaction.Exec
+type SQResult struct {
+	LastInsertId int64
+	RowsAffected uint64
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// GLOBALS
-
-const (
-	SQLITE_TXN_DEFAULT SQTxnFlag = (1 << iota)
-	SQLITE_TXN_IMMEDIATE
-	SQLITE_TXN_EXCLUSIVE
-	SQLITE_TXN_SNAPSHOT
-	SQLITE_TXN_NO_FOREIGNKEY_CONSTRAINTS
-)
-
-const (
-	SQLITE_AUTH_TABLE       SQAuthFlag = 1 << iota // Table Object
-	SQLITE_AUTH_INDEX                              // Index Object
-	SQLITE_AUTH_VIEW                               // View Object
-	SQLITE_AUTH_TRIGGER                            // Trigger Object
-	SQLITE_AUTH_VTABLE                             // Virtual Table Object
-	SQLITE_AUTH_TEMP                               // Temporary Object
-	SQLITE_AUTH_TRANSACTION                        // Transaction
-	SQLITE_AUTH_CREATE                             // Create operation
-	SQLITE_AUTH_DROP                               // Drop operation
-	SQLITE_AUTH_INSERT                             // Insert operation
-	SQLITE_AUTH_DELETE                             // Delete operation
-	SQLITE_AUTH_ALTER                              // Alter operation
-	SQLITE_AUTH_ANALYZE                            // Analyze  operation
-	SQLITE_AUTH_PRAGMA                             // Pragma operation
-	SQLITE_AUTH_READ                               // Read column operation
-	SQLITE_AUTH_UPDATE                             // Update column operation
-	SQLITE_AUTH_FUNCTION                           // Execute function operation
-	SQLITE_AUTH_BEGIN                              // Begin txn operation
-	SQLITE_AUTH_COMMIT                             // Commit txn operation
-	SQLITE_AUTH_ROLLBACK                           // Rollback txn operation
-	SQLITE_AUTH_MIN                    = SQLITE_AUTH_TABLE
-	SQLITE_AUTH_MAX                    = SQLITE_AUTH_ROLLBACK
-	SQLITE_AUTH_NONE        SQAuthFlag = 0
-)
-
-///////////////////////////////////////////////////////////////////////////////
-// STRINGIFY
-
-func (v SQAuthFlag) StringFlag() string {
-	switch v {
-	case SQLITE_AUTH_NONE:
-		return "SQLITE_AUTH_NONE"
-	case SQLITE_AUTH_TABLE:
-		return "SQLITE_AUTH_TABLE"
-	case SQLITE_AUTH_INDEX:
-		return "SQLITE_AUTH_INDEX"
-	case SQLITE_AUTH_VIEW:
-		return "SQLITE_AUTH_VIEW"
-	case SQLITE_AUTH_TRIGGER:
-		return "SQLITE_AUTH_TRIGGER"
-	case SQLITE_AUTH_VTABLE:
-		return "SQLITE_AUTH_VTABLE"
-	case SQLITE_AUTH_TEMP:
-		return "SQLITE_AUTH_TEMP"
-	case SQLITE_AUTH_TRANSACTION:
-		return "SQLITE_AUTH_TRANSACTION"
-	case SQLITE_AUTH_CREATE:
-		return "SQLITE_AUTH_CREATE"
-	case SQLITE_AUTH_DROP:
-		return "SQLITE_AUTH_DROP"
-	case SQLITE_AUTH_INSERT:
-		return "SQLITE_AUTH_INSERT"
-	case SQLITE_AUTH_DELETE:
-		return "SQLITE_AUTH_DELETE"
-	case SQLITE_AUTH_ALTER:
-		return "SQLITE_AUTH_ALTER"
-	case SQLITE_AUTH_ANALYZE:
-		return "SQLITE_AUTH_ANALYZE"
-	case SQLITE_AUTH_READ:
-		return "SQLITE_AUTH_READ"
-	case SQLITE_AUTH_UPDATE:
-		return "SQLITE_AUTH_UPDATE"
-	case SQLITE_AUTH_PRAGMA:
-		return "SQLITE_AUTH_PRAGMA"
-	case SQLITE_AUTH_FUNCTION:
-		return "SQLITE_AUTH_FUNCTION"
-	case SQLITE_AUTH_BEGIN:
-		return "SQLITE_AUTH_BEGIN"
-	case SQLITE_AUTH_COMMIT:
-		return "SQLITE_AUTH_COMMIT"
-	case SQLITE_AUTH_ROLLBACK:
-		return "SQLITE_AUTH_ROLLBACK"
-	default:
-		return "[?? Invalid SQAuthFlag value]"
-	}
+// SQStatement is any statement which can be executed
+type SQStatement interface {
+	Query() string
 }
 
-func (v SQAuthFlag) String() string {
-	if v == SQLITE_AUTH_NONE {
-		return v.StringFlag()
-	}
-	str := ""
-	for f := SQLITE_AUTH_MIN; f <= SQLITE_AUTH_MAX; f = f << 1 {
-		if v&f == f {
-			str += "|" + f.StringFlag()
-		}
-	}
-	return strings.TrimPrefix(str, "|")
+// SQTable defines a table of columns and indexes
+type SQTable interface {
+	SQStatement
+
+	IfNotExists() SQTable
+	WithSchema(string) SQTable
+	WithTemporary() SQTable
+	WithoutRowID() SQTable
+	WithIndex(...string) SQTable
+	WithUnique(...string) SQTable
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// METHODS
+type SQInsert interface {
+	SQStatement
 
-// Is any of the flags in q
-func (v SQAuthFlag) Is(q SQAuthFlag) bool {
-	return v&q != 0
+	WithSchema(string) SQInsert
+	DefaultValues() SQInsert
 }
 
-// Is any of the flags in q
-func (v SQTxnFlag) Is(q SQTxnFlag) bool {
-	return v&q != 0
+type SQSelect interface {
+	SQStatement
+
+	WithDistinct() SQSelect
+}
+
+type SQIndex interface {
+	SQStatement
+
+	IfNotExists() SQIndex
+	WithName(string) SQIndex
+	WithSchema(string) SQIndex
+	WithUnique() SQIndex
+}
+
+type SQDrop interface {
+	SQStatement
+
+	IfExists() SQDrop
+	WithSchema(string) SQDrop
+}
+
+type SQColumn interface {
+	Primary() SQColumn
+	NotNull() SQColumn
+}
+
+type SQSource interface {
+	WithAlias(string) SQSource
 }
