@@ -15,8 +15,6 @@ type sel struct {
 	distinct      bool
 	limit, offset uint
 	where         []interface{}
-	to            []sqlite.SQSource
-	order         []sqlite.SQSource
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -24,45 +22,28 @@ type sel struct {
 
 // S defines a select statement
 func S(sources ...sqlite.SQSource) sqlite.SQSelect {
-	return &sel{sources, false, 0, 0, nil, nil, nil}
+	return &sel{sources, false, 0, 0, nil}
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // PROPERTIES
 
 func (this *sel) WithDistinct() sqlite.SQSelect {
-	return &sel{this.source, true, this.limit, this.offset, this.where, this.to, this.order}
+	return &sel{this.source, true, this.limit, this.offset, this.where}
 }
 
 func (this *sel) WithLimitOffset(limit, offset uint) sqlite.SQSelect {
-	return &sel{this.source, this.distinct, limit, offset, this.where, this.to, this.order}
+	return &sel{this.source, this.distinct, limit, offset, this.where}
 }
 
 func (this *sel) Where(v ...interface{}) sqlite.SQSelect {
 	if len(v) == 0 {
 		// Reset where clause
-		return &sel{this.source, this.distinct, this.limit, this.offset, nil, this.to, this.order}
+		return &sel{this.source, this.distinct, this.limit, this.offset, nil}
+	} else {
+		// Where clause with an expression
+		return &sel{this.source, this.distinct, this.limit, this.offset, append(this.where, v...)}
 	}
-	// Where clause with an expression
-	return &sel{this.source, this.distinct, this.limit, this.offset, append(this.where, v...), this.to, this.order}
-}
-
-func (this *sel) To(v ...sqlite.SQSource) sqlite.SQSelect {
-	if len(v) == 0 {
-		// Reset to clause
-		return &sel{this.source, this.distinct, this.limit, this.offset, this.where, nil, this.order}
-	}
-	// To clause with an expression
-	return &sel{this.source, this.distinct, this.limit, this.offset, this.where, append(this.to, v...), this.order}
-}
-
-func (this *sel) Order(v ...sqlite.SQSource) sqlite.SQSelect {
-	if len(v) == 0 {
-		// Reset order clause
-		return &sel{this.source, this.distinct, this.limit, this.offset, this.where, this.to, nil}
-	}
-	// Append order clause
-	return &sel{this.source, this.distinct, this.limit, this.offset, this.where, this.to, append(this.order, v...)}
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -76,7 +57,7 @@ func (this *sel) Query() string {
 	tokens := []string{"SELECT"}
 
 	// Where there are no sources, return SELECT NULL
-	if len(this.source) == 0 && len(this.to) == 0 {
+	if len(this.source) == 0 {
 		return "SELECT NULL"
 	}
 
@@ -85,31 +66,18 @@ func (this *sel) Query() string {
 		tokens = append(tokens, "DISTINCT")
 	}
 
-	// To
-	if len(this.to) == 0 {
-		tokens = append(tokens, "*")
-	} else {
-		token := ""
-		for i, source := range this.to {
-			if i > 0 {
-				token += ","
-			}
-			token += fmt.Sprint(source)
-		}
-		tokens = append(tokens, token)
-	}
+	// TODO: Add column expressions
+	tokens = append(tokens, "*")
 
 	// Add sources using a cross join
-	if len(this.source) > 0 {
-		token := "FROM "
-		for i, source := range this.source {
-			if i > 0 {
-				token += ","
-			}
-			token += source.Query()
+	token := "FROM "
+	for i, source := range this.source {
+		if i > 0 {
+			token += ","
 		}
-		tokens = append(tokens, token)
+		token += fmt.Sprint(source)
 	}
+	tokens = append(tokens, token)
 
 	// Where clause
 	if len(this.where) > 0 {
@@ -120,18 +88,6 @@ func (this *sel) Query() string {
 			}
 			tokens = append(tokens, fmt.Sprint(expr))
 		}
-	}
-
-	// Order clause
-	if len(this.order) > 0 {
-		token := "ORDER BY "
-		for i, expr := range this.order {
-			if i > 0 {
-				token += ","
-			}
-			token += fmt.Sprint(expr)
-		}
-		tokens = append(tokens, token)
 	}
 
 	// Add offset and limit

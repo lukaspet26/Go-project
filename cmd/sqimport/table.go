@@ -12,7 +12,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/djthorpe/go-sqlite"
+	// Modules
+	. "github.com/djthorpe/go-sqlite"
 )
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -26,6 +27,12 @@ type table struct {
 	dec      *decoder
 	mimetype string
 	charset  string
+
+	// Decoding options
+	Header    bool
+	Delimiter rune
+	Comment   rune
+	TrimSpace bool
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -109,7 +116,7 @@ func (this *table) String() string {
 
 // Read a row from the source data and potentially insert into the table. On end
 // of data, returns io.EOF.
-func (this *table) Read(db sqlite.SQConnection) error {
+func (this *table) Read(db SQConnection) error {
 	this.Mutex.Lock()
 	defer this.Mutex.Unlock()
 
@@ -131,6 +138,14 @@ func (this *table) Read(db sqlite.SQConnection) error {
 			return err
 		} else {
 			this.dec = dec
+			this.dec.SetHeader(this.Header)
+			this.dec.SetTrimSpace(this.TrimSpace)
+			if this.Delimiter != 0 {
+				this.dec.SetDelimiter(this.Delimiter)
+			}
+			if this.Comment != 0 {
+				this.dec.SetComment(this.Comment)
+			}
 		}
 		// Skip row
 		return nil
@@ -142,6 +157,28 @@ func (this *table) Read(db sqlite.SQConnection) error {
 		this.dec = nil
 		this.r = nil
 		return err
+	}
+
+	// Return sucess
+	return nil
+}
+
+// Scan all table rows
+func (this *table) Scan(db SQConnection) error {
+	this.Mutex.Lock()
+	defer this.Mutex.Unlock()
+
+	rs, err := this.w.Select()
+	if err != nil {
+		return err
+	}
+	defer rs.Close()
+	for {
+		row := rs.NextMap()
+		if row == nil {
+			break
+		}
+		fmt.Println(row)
 	}
 
 	// Return sucess

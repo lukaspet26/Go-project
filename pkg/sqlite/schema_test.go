@@ -3,6 +3,7 @@ package sqlite_test
 import (
 	"testing"
 
+	. "github.com/djthorpe/go-sqlite/pkg/lang"
 	sq "github.com/djthorpe/go-sqlite/pkg/sqlite"
 )
 
@@ -30,8 +31,9 @@ func Test_Schema_002(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(db.CreateTable("foo", db.Column("a", "TEXT"))); err != nil {
-		t.Fatal(err)
+	st := N("foo").CreateTable(N("a").WithType("TEXT"))
+	if _, err := db.Exec(st); err != nil {
+		t.Fatalf("%q: %v", st.Query(), err)
 	}
 	tables := db.Tables()
 	if tables == nil {
@@ -42,5 +44,23 @@ func Test_Schema_002(t *testing.T) {
 	}
 	if tables[0] != "foo" {
 		t.Fatal("Tables not 'foo'")
+	}
+}
+func Test_Schema_003(t *testing.T) {
+	db, err := sq.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	modules := db.Modules("")
+	if modules == nil {
+		t.Error("Modules returned nil")
+	}
+	for _, module := range modules {
+		if modules := db.Modules(module); len(modules) == 0 {
+			t.Errorf("Modules with arg %q expected non-empty return", module)
+		} else {
+			t.Logf("Module(%q) => %q", module, modules)
+		}
 	}
 }

@@ -2,14 +2,19 @@ package sqlite
 
 import (
 	"fmt"
+	"strings"
 
 	// Modules
 	sqlite "github.com/djthorpe/go-sqlite"
+	. "github.com/djthorpe/go-sqlite/pkg/lang"
 )
+
+///////////////////////////////////////////////////////////////////////////////
+// PUBLIC METHODS
 
 func (this *connection) Schemas() []string {
 	// Perform the query
-	rs, err := this.Query(this.Q("PRAGMA database_list"))
+	rs, err := this.Query(Q("PRAGMA database_list"))
 	if err != nil {
 		return nil
 	}
@@ -18,11 +23,11 @@ func (this *connection) Schemas() []string {
 	// Collate the results
 	schemas := make([]string, 0, 1)
 	for {
-		if row := rs.NextMap(); row == nil {
+		row := rs.NextMap()
+		if row == nil {
 			break
-		} else {
-			schemas = append(schemas, row["name"].(string))
 		}
+		schemas = append(schemas, row["name"].(string))
 	}
 
 	// Return success
@@ -54,13 +59,13 @@ func (this *connection) TablesEx(schema string, temp bool) []string {
 
 	// Append the schema
 	if schema != "" {
-		query = fmt.Sprintf(query, QuoteIdentifier(schema)+".", QuoteIdentifier(schema)+".")
+		query = fmt.Sprintf(query, sqlite.QuoteIdentifier(schema)+".", sqlite.QuoteIdentifier(schema)+".")
 	} else {
 		query = fmt.Sprintf(query, "", "")
 	}
 
 	// Perform the query
-	rows, err := this.Query(this.Q(query), "table")
+	rows, err := this.Query(Q(query), "table")
 	if err != nil {
 		return nil
 	}
@@ -89,15 +94,14 @@ func (this *connection) Columns(name string) []sqlite.SQColumn {
 
 func (this *connection) ColumnsEx(name, schema string) []sqlite.SQColumn {
 	// Perform query
-	query := "table_info(" + QuoteIdentifier(name) + ")"
+	query := "table_info(" + sqlite.QuoteIdentifier(name) + ")"
 	if schema != "" {
-		query = "PRAGMA " + QuoteIdentifier(schema) + "." + query
+		query = "PRAGMA " + sqlite.QuoteIdentifier(schema) + "." + query
 	} else {
 		query = "PRAGMA " + query
 	}
-	rs, err := this.Query(this.Q(query))
+	rs, err := this.Query(Q(query))
 	if err != nil {
-		fmt.Println(err)
 		return nil
 	}
 	defer rs.Close()
@@ -108,13 +112,56 @@ func (this *connection) ColumnsEx(name, schema string) []sqlite.SQColumn {
 		row := rs.NextMap()
 		if row == nil {
 			break
-		} else {
-			columns = append(columns, &column{
-				name:     row["name"].(string),
-				decltype: row["type"].(string),
-				nullable: row["notnull"].(int64) == 0,
-			})
 		}
+		col := N(row["name"].(string)).WithType(row["type"].(string))
+		if row["notnull"].(int64) != 0 {
+			col = col.NotNull()
+		}
+		columns = append(columns, col)
 	}
 	return columns
+}
+
+func (this *connection) Modules(prefix ...string) []string {
+	// Perform query
+	rs, err := this.Query(Q("PRAGMA module_list"))
+	if err != nil {
+		return nil
+	}
+	defer rs.Close()
+
+	// Collate results
+	var result []string
+	for {
+		row := rs.NextArray()
+		if len(row) == 0 {
+			break
+		}
+		module := row[0].(string)
+		if moduleHasPrefix(module, prefix) {
+			result = append(result, module)
+		}
+	}
+
+	// Return nil if no matching results
+	if len(result) == 0 {
+		return nil
+	} else {
+		return result
+	}
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// PRIVATE METHODS
+
+func moduleHasPrefix(module string, prefix []string) bool {
+	if len(prefix) == 0 {
+		return true
+	}
+	for _, prefix := range prefix {
+		if strings.HasPrefix(module, prefix) {
+			return true
+		}
+	}
+	return false
 }

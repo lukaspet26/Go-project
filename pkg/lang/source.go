@@ -3,9 +3,7 @@ package lang
 import (
 	"strings"
 
-	// Import namespaces
-	. "github.com/djthorpe/go-sqlite"
-	. "github.com/djthorpe/go-sqlite/pkg/quote"
+	sqlite "github.com/djthorpe/go-sqlite"
 )
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -15,56 +13,35 @@ type source struct {
 	name   string
 	schema string
 	alias  string
-	desc   bool
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // LIFECYCLE
 
 // N defines a table name or column name
-func N(s string) SQSource {
-	return &source{s, "", "", false}
+func N(s string) sqlite.SQSource {
+	return &source{s, "", ""}
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // PROPERTIES
 
-func (this *source) Name() string {
-	return this.name
+func (this *source) WithSchema(schema string) sqlite.SQSource {
+	return &source{this.name, schema, this.alias}
 }
 
-func (this *source) Schema() string {
-	return this.schema
+func (this *source) WithAlias(alias string) sqlite.SQSource {
+	return &source{this.name, this.schema, alias}
 }
 
-func (this *source) Alias() string {
-	return this.alias
-}
-
-func (this *source) WithName(name string) SQSource {
-	return &source{name, this.schema, this.alias, this.desc}
-}
-
-func (this *source) WithSchema(schema string) SQSource {
-	return &source{this.name, schema, this.alias, this.desc}
-}
-
-func (this *source) WithAlias(alias string) SQSource {
-	return &source{this.name, this.schema, alias, this.desc}
-}
-
-func (this *source) WithType(decltype string) SQColumn {
-	return &column{*this, decltype, false, false, false, nil}
-}
-
-func (this *source) WithDesc() SQSource {
-	return &source{this.name, this.schema, this.alias, true}
+func (this *source) WithType(decltype string) sqlite.SQColumn {
+	return &column{*this, decltype, false, false}
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // CONVERT TO EXPR
 
-func (this *source) Or(v interface{}) SQExpr {
+func (this *source) Or(v interface{}) sqlite.SQExpr {
 	return &e{this, v, "OR"}
 }
 
@@ -74,19 +51,16 @@ func (this *source) Or(v interface{}) SQExpr {
 func (this *source) String() string {
 	tokens := []string{}
 	if this.schema != "" {
-		tokens = append(tokens, QuoteIdentifier(this.schema), ".", QuoteIdentifier(this.name))
+		tokens = append(tokens, sqlite.QuoteIdentifier(this.schema), ".", sqlite.QuoteIdentifier(this.name))
 	} else {
-		tokens = append(tokens, QuoteIdentifier(this.name))
+		tokens = append(tokens, sqlite.QuoteIdentifier(this.name))
 	}
 	if this.alias != "" {
-		tokens = append(tokens, " AS ", QuoteIdentifier(this.alias))
-	}
-	if this.desc {
-		tokens = append(tokens, " DESC")
+		tokens = append(tokens, " AS ", sqlite.QuoteIdentifier(this.alias))
 	}
 	return strings.Join(tokens, "")
 }
 
 func (this *source) Query() string {
-	return this.String()
+	return "SELECT * FROM " + this.String()
 }
