@@ -92,6 +92,7 @@ type SQSource interface {
 	WithSchema(string) SQSource
 	WithType(string) SQColumn
 	WithAlias(string) SQSource
+	WithDesc() SQSource
 
 	// Insert or replace a row with named columns
 	Insert(...string) SQInsert
@@ -108,6 +109,9 @@ type SQSource interface {
 	CreateVirtualTable(string, ...string) SQIndexView
 	CreateIndex(string, ...string) SQIndexView
 	//CreateView(SQSelect, ...string) SQIndexView
+
+	// Alter objects
+	AlterTable() SQAlter
 }
 
 // SQTable defines a table of columns and indexes
@@ -151,14 +155,22 @@ type SQSelect interface {
 	// Set select flags
 	WithDistinct() SQSelect
 	WithLimitOffset(limit, offset uint) SQSelect
+
+	// Destination columns for results
+	To(...SQSource) SQSelect
+
+	// Where and order clauses
 	Where(...interface{}) SQSelect
+	Order(...SQSource) SQSelect
 }
 
 // SQAlter defines an alter table statement
 type SQAlter interface {
 	SQStatement
 
-	WithSchema(string) SQAlter
+	// Alter operation
+	AddColumn(SQColumn) SQStatement
+	DropColumn(SQColumn) SQStatement
 }
 
 // SQColumn represents a column definition
@@ -171,6 +183,7 @@ type SQColumn interface {
 
 	WithType(string) SQColumn
 	WithAlias(string) SQSource
+
 	Primary() SQColumn
 	NotNull() SQColumn
 }
