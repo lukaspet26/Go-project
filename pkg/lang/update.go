@@ -4,16 +4,14 @@ import (
 	"fmt"
 	"strings"
 
-	// Import namespaces
-	. "github.com/djthorpe/go-sqlite"
-	. "github.com/djthorpe/go-sqlite/pkg/quote"
+	sqlite "github.com/djthorpe/go-sqlite"
 )
 
 ///////////////////////////////////////////////////////////////////////////////
 // TYPES
 
 type update struct {
-	source   SQSource
+	source   sqlite.SQSource
 	conflict string
 	where    []interface{}
 	columns  []string
@@ -23,34 +21,34 @@ type update struct {
 // LIFECYCLE
 
 // Update values in a table with a name and defined column names
-func (this *source) Update(columns ...string) SQUpdate {
+func (this *source) Update(columns ...string) sqlite.SQUpdate {
 	return &update{&source{this.name, this.schema, "", false}, "", nil, columns}
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // PROPERTIES
 
-func (this *update) WithAbort() SQUpdate {
+func (this *update) WithAbort() sqlite.SQUpdate {
 	return &update{this.source, "OR ABORT", this.where, this.columns}
 }
 
-func (this *update) WithFail() SQUpdate {
+func (this *update) WithFail() sqlite.SQUpdate {
 	return &update{this.source, "OR FAIL", this.where, this.columns}
 }
 
-func (this *update) WithIgnore() SQUpdate {
+func (this *update) WithIgnore() sqlite.SQUpdate {
 	return &update{this.source, "OR IGNORE", this.where, this.columns}
 }
 
-func (this *update) WithReplace() SQUpdate {
+func (this *update) WithReplace() sqlite.SQUpdate {
 	return &update{this.source, "OR REPLACE", this.where, this.columns}
 }
 
-func (this *update) WithRollback() SQUpdate {
+func (this *update) WithRollback() sqlite.SQUpdate {
 	return &update{this.source, "OR ROLLBACK", this.where, this.columns}
 }
 
-func (this *update) Where(v ...interface{}) SQUpdate {
+func (this *update) Where(v ...interface{}) sqlite.SQUpdate {
 	if len(v) == 0 {
 		// Reset where clause
 		return &update{this.source, this.conflict, nil, this.columns}
@@ -79,7 +77,7 @@ func (this *update) Query() string {
 	if len(this.columns) > 0 {
 		cols := make([]string, 0, len(this.columns))
 		for _, col := range this.columns {
-			cols = append(cols, fmt.Sprint(QuoteIdentifier(col), "=?"))
+			cols = append(cols, fmt.Sprint(sqlite.QuoteIdentifier(col), "=?"))
 		}
 		tokens = append(tokens, "SET", strings.Join(cols, ", "))
 	}
