@@ -2,12 +2,14 @@ package sqlite
 
 import (
 	sql "database/sql/driver"
-	"reflect"
 
 	// Modules
-	sqlite "github.com/djthorpe/go-sqlite"
 	multierror "github.com/hashicorp/go-multierror"
 	driver "github.com/mattn/go-sqlite3"
+
+	// Import namespaces
+	. "github.com/djthorpe/go-errors"
+	. "github.com/djthorpe/go-sqlite"
 )
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -20,7 +22,7 @@ type txn struct {
 }
 
 type prepared struct {
-	sqlite.SQStatement
+	SQStatement
 	p *driver.SQLiteStmt
 }
 
@@ -38,7 +40,7 @@ func (this *txn) Destroy() error {
 
 	// Check for opened connection
 	if this.conn == nil {
-		return sqlite.ErrInternalAppError.With("Destroy")
+		return ErrInternalAppError.With("Destroy")
 	}
 
 	// Cycle through prepared statements to destroy
@@ -73,16 +75,16 @@ func (this *prepared) String() string {
 ////////////////////////////////////////////////////////////////////////////////
 // PUBLIC METHODS
 
-func (this *txn) Query(q sqlite.SQStatement, args ...interface{}) (sqlite.SQRows, error) {
+func (this *txn) Query(q SQStatement, args ...interface{}) (SQRows, error) {
 	var results sql.Rows
 
 	// Check opened connection
 	if this.conn == nil {
-		return nil, sqlite.ErrBadParameter
+		return nil, ErrBadParameter
 	}
 
-	// Convert arguments
-	values, err := to_values(args)
+	// Bound parameters
+	values, err := BoundValues(args)
 	if err != nil {
 		return nil, err
 	}
@@ -101,18 +103,18 @@ func (this *txn) Query(q sqlite.SQStatement, args ...interface{}) (sqlite.SQRows
 	return NewRows(results.(*driver.SQLiteRows)), nil
 }
 
-func (this *txn) Exec(q sqlite.SQStatement, args ...interface{}) (sqlite.SQResult, error) {
+func (this *txn) Exec(q SQStatement, args ...interface{}) (SQResult, error) {
 	var results sql.Result
 
 	// Check opened connection
 	if this.conn == nil {
-		return sqlite.SQResult{}, sqlite.ErrBadParameter
+		return SQResult{}, ErrBadParameter
 	}
 
 	// Convert arguments
-	values, err := to_values(args)
+	values, err := BoundValues(args)
 	if err != nil {
-		return sqlite.SQResult{}, err
+		return SQResult{}, err
 	}
 
 	// Execute prepared or statement
@@ -122,20 +124,20 @@ func (this *txn) Exec(q sqlite.SQStatement, args ...interface{}) (sqlite.SQResul
 		results, err = this.conn.Exec(q.Query(), values)
 	}
 	if err != nil {
-		return sqlite.SQResult{}, err
+		return SQResult{}, err
 	}
 
 	// Return results
 	if lastInsertID, err := results.LastInsertId(); err != nil {
-		return sqlite.SQResult{}, err
+		return SQResult{}, err
 	} else if rowsAffected, err := results.RowsAffected(); err != nil {
-		return sqlite.SQResult{}, err
+		return SQResult{}, err
 	} else {
-		return sqlite.SQResult{lastInsertID, uint64(rowsAffected)}, nil
+		return SQResult{lastInsertID, uint64(rowsAffected)}, nil
 	}
 }
 
-func (this *txn) Prepare(v sqlite.SQStatement) (sqlite.SQStatement, error) {
+func (this *txn) Prepare(v SQStatement) (SQStatement, error) {
 	// Return any prepared statements
 	if v, ok := v.(*prepared); ok {
 		return v, nil
@@ -146,20 +148,4 @@ func (this *txn) Prepare(v sqlite.SQStatement) (sqlite.SQStatement, error) {
 	} else {
 		return &prepared{v, stmt.(*driver.SQLiteStmt)}, nil
 	}
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// PRIVATE METHODS
-
-// to_values converts all values to supported types or returns error
-func to_values(args []interface{}) ([]sql.Value, error) {
-	result := make([]sql.Value, len(args))
-	for i, a := range args {
-		if v, err := BoundValue(reflect.ValueOf(a)); err != nil {
-			return nil, err
-		} else {
-			result[i] = v
-		}
-	}
-	return result, nil
 }

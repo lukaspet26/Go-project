@@ -4,9 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	// Import namespaces
-	. "github.com/djthorpe/go-sqlite"
-	. "github.com/djthorpe/go-sqlite/pkg/quote"
+	sqlite "github.com/djthorpe/go-sqlite"
 )
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -22,14 +20,14 @@ type foreignkey struct {
 // LIFECYCLE
 
 // Create a foreign key
-func (this *source) ForeignKey(columns ...string) SQForeignKey {
+func (this *source) ForeignKey(columns ...string) sqlite.SQForeignKey {
 	return &foreignkey{&source{this.name, "", "", false}, columns, ""}
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // PROPERTIES
 
-func (this *foreignkey) OnDeleteCascade() SQForeignKey {
+func (this *foreignkey) OnDeleteCascade() sqlite.SQForeignKey {
 	return &foreignkey{this.source, this.columns, "ON DELETE CASCADE"}
 }
 
@@ -41,11 +39,11 @@ func (this *foreignkey) String() string {
 }
 
 func (this *foreignkey) Query(columns ...string) string {
-	tokens := []string{"FOREIGN KEY (" + QuoteIdentifiers(columns...) + ")", "REFERENCES", fmt.Sprint(this.source)}
+	tokens := []string{"FOREIGN KEY (" + sqlite.QuoteIdentifiers(columns...) + ")", "REFERENCES", fmt.Sprint(this.source)}
 
 	// Add columns
 	if len(this.columns) > 0 {
-		tokens = append(tokens, "("+QuoteIdentifiers(this.columns...)+")")
+		tokens = append(tokens, "("+sqlite.QuoteIdentifiers(this.columns...)+")")
 	}
 
 	// Add constraint clause

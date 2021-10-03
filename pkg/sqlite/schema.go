@@ -10,8 +10,16 @@ import (
 )
 
 ///////////////////////////////////////////////////////////////////////////////
+// GLOBALS
+
+var (
+	temporarySchema = "temp"
+)
+
+///////////////////////////////////////////////////////////////////////////////
 // PUBLIC METHODS
 
+// Schemas returns all attached schemas, except "temp"
 func (this *connection) Schemas() []string {
 	// Perform the query
 	rs, err := this.Query(Q("PRAGMA database_list"))
@@ -34,6 +42,12 @@ func (this *connection) Schemas() []string {
 	return schemas
 }
 
+// Filename returns the filename for a schema
+func (this *connection) Filename(schema string) string {
+	return this.conn.GetFilename(schema)
+}
+
+// Tables returns all known tables in main schema
 func (this *connection) Tables() []string {
 	return this.TablesEx("", false)
 }
@@ -74,7 +88,7 @@ func (this *connection) TablesEx(schema string, temp bool) []string {
 	// Collate the results
 	names := make([]string, 0, 10)
 	for {
-		values := rows.NextArray()
+		values := rows.Next()
 		if values == nil {
 			break
 		} else if len(values) != 1 {
@@ -94,13 +108,7 @@ func (this *connection) Columns(name string) []sqlite.SQColumn {
 
 func (this *connection) ColumnsEx(name, schema string) []sqlite.SQColumn {
 	// Perform query
-	query := "table_info(" + sqlite.QuoteIdentifier(name) + ")"
-	if schema != "" {
-		query = "PRAGMA " + sqlite.QuoteIdentifier(schema) + "." + query
-	} else {
-		query = "PRAGMA " + query
-	}
-	rs, err := this.Query(Q(query))
+	rs, err := this.Query(Q("PRAGMA table_info(", N(name).WithSchema(schema), ")"))
 	if err != nil {
 		return nil
 	}
@@ -133,7 +141,7 @@ func (this *connection) Modules(prefix ...string) []string {
 	// Collate results
 	var result []string
 	for {
-		row := rs.NextArray()
+		row := rs.Next()
 		if len(row) == 0 {
 			break
 		}
@@ -151,8 +159,72 @@ func (this *connection) Modules(prefix ...string) []string {
 	}
 }
 
+func (this *connection) Indexes(name string) []sqlite.SQIndexView {
+	return this.IndexesEx(name, "")
+}
+
+func (this *connection) IndexesEx(name, schema string) []sqlite.SQIndexView {
+	rs, err := this.Query(Q("PRAGMA index_list(", N(name).WithSchema(schema), ")"))
+	if err != nil {
+		return nil
+	}
+	defer rs.Close()
+
+	// Collate results
+	var result []sqlite.SQIndexView
+	for {
+		row := rs.NextMap()
+		if row == nil {
+			break
+		}
+		index := N(row["name"].(string)).
+			WithSchema(schema).
+			CreateIndex(name, this.indexColumns(row["name"].(string), schema)...)
+		// Set temporary
+		if schema == temporarySchema {
+			index = index.WithTemporary()
+		}
+		// Set unique
+		if row["unique"].(int64) != 0 || row["origin"].(string) == "u" || row["origin"].(string) == "pk" {
+			index = index.WithUnique()
+		}
+		// Set whether a CREATE INDEX or AUTO INDEX
+		if row["origin"].(string) != "c" {
+			index = index.WithAuto()
+		}
+
+		// Append index
+		result = append(result, index)
+	}
+	return result
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // PRIVATE METHODS
+
+func (this *connection) indexColumns(name, schema string) []string {
+	// Query for index information
+	rs, err := this.Query(Q("PRAGMA index_info(", N(name).WithSchema(schema), ")"))
+	if err != nil {
+		return nil
+	}
+	defer rs.Close()
+
+	// Collate results
+	var result []string
+	for {
+		row := rs.NextMap()
+		if row == nil {
+			break
+		}
+		if col, ok := row["name"].(string); ok {
+			result = append(result, col)
+		} else {
+			result = append(result, fmt.Sprint("cid=", row["cid"]))
+		}
+	}
+	return result
+}
 
 func moduleHasPrefix(module string, prefix []string) bool {
 	if len(prefix) == 0 {

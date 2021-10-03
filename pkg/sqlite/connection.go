@@ -3,14 +3,16 @@ package sqlite
 import (
 	"fmt"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 
 	// Modules
-	sqlite "github.com/djthorpe/go-sqlite"
 	multierror "github.com/hashicorp/go-multierror"
 	driver "github.com/mattn/go-sqlite3"
+
+	// Import namespaces
+	. "github.com/djthorpe/go-errors"
+	. "github.com/djthorpe/go-sqlite"
 )
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -28,7 +30,7 @@ type connection struct {
 // NEW
 
 // Open a database and set the timezone
-func Open(path string, location *time.Location) (sqlite.SQConnection, error) {
+func Open(path string, location *time.Location) (SQConnection, error) {
 	this := new(connection)
 
 	// Set timezone
@@ -63,13 +65,13 @@ func Open(path string, location *time.Location) (sqlite.SQConnection, error) {
 }
 
 // Create an in-memory database and optionally set the timezone
-func New(location ...*time.Location) (sqlite.SQConnection, error) {
+func New(location ...*time.Location) (SQConnection, error) {
 	if len(location) == 0 {
 		return Open("", nil)
 	} else if len(location) == 1 {
 		return Open("", location[0])
 	} else {
-		return nil, sqlite.ErrBadParameter
+		return nil, ErrBadParameter
 	}
 }
 
@@ -83,9 +85,11 @@ func (this *connection) Close() error {
 
 func (this *connection) String() string {
 	str := "<sqlite.connection"
+	str += fmt.Sprintf(" ver=%q", Version())
 	str += fmt.Sprintf(" dsn=%q", this.dsn)
-	if schemas := this.Schemas(); len(schemas) > 0 {
-		str += fmt.Sprintf(" schemas=%q", strings.Join(schemas, ","))
+	str += fmt.Sprintf(" schemas=%q", this.Schemas())
+	for _, schema := range this.Schemas() {
+		str += fmt.Sprintf(" %s=%q", schema, this.Filename(schema))
 	}
 	return str + ">"
 }
@@ -93,17 +97,17 @@ func (this *connection) String() string {
 ///////////////////////////////////////////////////////////////////////////////
 // PUBLIC METHODS
 
-func (this *connection) Do(cb func(sqlite.SQTransaction) error) error {
+func (this *connection) Do(cb func(SQTransaction) error) error {
 	this.Mutex.Lock()
 	defer this.Mutex.Unlock()
 
 	transaction := new(txn)
 	if this.ctx != nil {
-		return sqlite.ErrInternalAppError.With("Already in a transaction")
+		return ErrInternalAppError.With("Already in a transaction")
 	} else if ctx, err := this.conn.Begin(); err != nil {
 		return err
 	} else if this.ctx = ctx.(*driver.SQLiteTx); this.ctx == nil {
-		return sqlite.ErrInternalAppError.With("Invalid transaction object")
+		return ErrInternalAppError.With("Invalid transaction object")
 	} else if err := transaction.Init(this.conn, true); err != nil {
 		return err
 	}

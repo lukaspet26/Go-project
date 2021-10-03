@@ -15,12 +15,22 @@ type SQConnection interface {
 	// Schemas returns a list of all the schemas in the database
 	Schemas() []string
 
+	// Filename returns a filename for a schema, returns empty
+	// string if in-memory database
+	Filename(string) string
+
 	// Table returns a list of non-temporary tables in the default schema
 	Tables() []string
 
 	// TablesEx returns a list of tables in the specified schema. Pass true
 	// as second argument to include temporary tables.
 	TablesEx(string, bool) []string
+
+	// Indexes returns indexes for a specified table
+	Indexes(string) []SQIndexView
+
+	// Indexes returns indexes for a specified table in the specified schema
+	IndexesEx(string, string) []SQIndexView
 
 	// ColumnsEx returns an ordered list of columns in the specified table
 	Columns(string) []SQColumn
@@ -41,6 +51,10 @@ type SQConnection interface {
 	// Create transaction block, rollback on error
 	Do(func(SQTransaction) error) error
 
+	// Get and set foreign key constraints
+	ForeignKeyConstraints() (bool, error)
+	SetForeignKeyConstraints(bool) error
+
 	// Close
 	Close() error
 }
@@ -59,14 +73,11 @@ type SQTransaction interface {
 
 // SQRows increments over returned rows from a query
 type SQRows interface {
-	// Return next row, returns io.EOF when all rows consumed
-	Next(v interface{}) error
+	// Return next row, returns nil when all rows consumed
+	Next() []interface{}
 
 	// Return next map of values, or nil if no more rows
 	NextMap() map[string]interface{}
-
-	// Return next array of values, or nil if no more rows
-	NextArray() []interface{}
 
 	// Close the rows, and free up any resources
 	Close() error
@@ -88,8 +99,10 @@ type SQSource interface {
 	SQStatement
 	SQExpr
 
-	// Return name
+	// Return name, schema, type
 	Name() string
+	Schema() string
+	Alias() string
 
 	// Modify the source
 	WithName(string) SQSource
@@ -98,7 +111,7 @@ type SQSource interface {
 	WithAlias(string) SQSource
 	WithDesc() SQSource
 
-	// Insert or replace a row with named columns
+	// Insert, replace or upsert a row with named columns
 	Insert(...string) SQInsert
 	Replace(...string) SQInsert
 
@@ -113,6 +126,7 @@ type SQSource interface {
 	CreateVirtualTable(string, ...string) SQIndexView
 	CreateIndex(string, ...string) SQIndexView
 	//CreateView(SQSelect, ...string) SQIndexView
+	ForeignKey(...string) SQForeignKey
 
 	// Alter objects
 	AlterTable() SQAlter
@@ -131,6 +145,7 @@ type SQTable interface {
 	WithoutRowID() SQTable
 	WithIndex(...string) SQTable
 	WithUnique(...string) SQTable
+	WithForeignKey(SQForeignKey, ...string) SQTable
 }
 
 // SQUpdate defines an update statement
@@ -151,10 +166,19 @@ type SQUpdate interface {
 // SQIndexView defines a create index or view statement
 type SQIndexView interface {
 	SQStatement
+	SQSource
 
+	// Return properties
+	Unique() bool
+	Table() string
+	Columns() []string
+	Auto() bool
+
+	// Modifiers
 	IfNotExists() SQIndexView
 	WithTemporary() SQIndexView
 	WithUnique() SQIndexView
+	WithAuto() SQIndexView
 }
 
 // SQDrop defines a drop for tables, views, indexes, and triggers
@@ -169,6 +193,8 @@ type SQInsert interface {
 	SQStatement
 
 	DefaultValues() SQInsert
+	WithConflictDoNothing(...string) SQInsert
+	WithConflictUpdate(...string) SQInsert
 }
 
 // SQSelect defines a select statement
@@ -196,19 +222,30 @@ type SQAlter interface {
 	DropColumn(SQColumn) SQStatement
 }
 
+// SQForeignKey represents a foreign key constraint
+type SQForeignKey interface {
+	// Modifiers
+	OnDeleteCascade() SQForeignKey
+}
+
 // SQColumn represents a column definition
 type SQColumn interface {
 	SQStatement
 
+	// Properties
 	Name() string
 	Type() string
 	Nullable() bool
+	Primary() string
 
+	// Modifiers
+	NotNull() SQColumn
 	WithType(string) SQColumn
 	WithAlias(string) SQSource
-
-	Primary() SQColumn
-	NotNull() SQColumn
+	WithPrimary() SQColumn
+	WithAutoIncrement() SQColumn
+	WithDefault(v interface{}) SQColumn
+	WithDefaultNow() SQColumn
 }
 
 // SQExpr defines any expression
