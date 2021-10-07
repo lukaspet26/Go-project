@@ -1,10 +1,9 @@
 package sqlite3
 
 import (
+	"fmt"
 
 	// Namespace imports
-	"strconv"
-
 	. "github.com/djthorpe/go-sqlite"
 	. "github.com/djthorpe/go-sqlite/pkg/lang"
 )
@@ -14,7 +13,7 @@ import (
 
 // Schemas returns a list of schemas
 func (c *Conn) Schemas() []string {
-	schemas := []string{}
+	var schemas []string
 	if err := c.Exec(Q("PRAGMA database_list"), func(row, col []string) bool {
 		schemas = append(schemas, row[1])
 		return false
@@ -40,31 +39,12 @@ func (c *Conn) Tables(schema string) []string {
 	return c.objectsInSchema(schema, "table")
 }
 
-// Count returns a count of rows in a table, returns -1 on error
-func (c *Conn) Count(schema, table string) int64 {
-	if table == "" {
-		return -1
-	} else if schema == "" {
-		return c.Count(defaultSchema, table)
-	}
-	result := int64(-1)
-	if err := c.Exec(Q("SELECT COUNT(*) FROM ", N(table).WithSchema(schema)), func(row, k []string) bool {
-		if v, err := strconv.ParseInt(row[0], 10, 64); err == nil {
-			result = v
-		}
-		return false
-	}); err != nil {
-		return -1
-	}
-	return result
-}
-
 // ColumnsForTable returns the columns in a table
 func (c *Conn) ColumnsForTable(schema, table string) []SQColumn {
 	if schema == "" {
 		return c.ColumnsForTable(defaultSchema, table)
 	}
-	result := []SQColumn{}
+	var result []SQColumn
 	if err := c.Exec(Q("PRAGMA ", N(schema), ".table_info(", N(table), ")"), func(row, k []string) bool {
 		// k is "cid" "name" "type" "notnull" "dflt_value" "pk"
 		col := C(row[1]).WithType(row[2])
@@ -78,6 +58,7 @@ func (c *Conn) ColumnsForTable(schema, table string) []SQColumn {
 		result = append(result, col)
 		return false
 	}); err != nil {
+		fmt.Println(err)
 		return nil
 	}
 	return result
@@ -89,9 +70,9 @@ func (c *Conn) ColumnsForIndex(schema, index string) []string {
 		return c.ColumnsForIndex(defaultSchema, index)
 	}
 
-	result := []string{}
+	var result []string
 	if err := c.Exec(Q("PRAGMA ", N(schema), ".index_info(", N(index), ")"), func(row, c []string) bool {
-		result = append(result, row[2])
+		fmt.Printf("%q %q => %q\n", index, row, c)
 		return false
 	}); err != nil {
 		return nil
@@ -106,8 +87,8 @@ func (c *Conn) IndexesForTable(schema, table string) []SQIndexView {
 	} else if schema == "" {
 		return c.IndexesForTable(defaultSchema, table)
 	}
-	result := []SQIndexView{}
-	if err := c.ExecEx(Q("PRAGMA ", N(schema), ".index_list(", N(table), ")").Query(), func(row, _ []string) bool {
+	var result []SQIndexView
+	if err := c.Exec(Q("PRAGMA ", N(schema), ".index_list(", N(table), ")"), func(row, _ []string) bool {
 		// columns are is "seq" "name" "unique" "origin" "partial"
 
 		// Get index column names, abort if error
@@ -147,7 +128,7 @@ func (c *Conn) Views(schema string) []string {
 // provided, then only modules with those name prefixes are returned.
 func (c *Conn) Modules(prefix ...string) []string {
 	// Get the names, return
-	result := []string{}
+	var result []string
 	if err := c.Exec(Q("PRAGMA module_list"), func(row, _ []string) bool {
 		if module := row[0]; len(prefix) == 0 || inList(prefix, module, true) {
 			result = append(result, module)
