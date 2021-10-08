@@ -27,9 +27,11 @@ func (s *Statement) String() string {
 	if s.IsBusy() {
 		str += " busy"
 	}
-	if s.IsExplain() {
-		str += " explain"
-	}
+	/*
+		if s.IsExplain() {
+			str += " explain"
+		}
+	*/
 	if s.IsReadonly() {
 		str += " readonly"
 	}
@@ -135,9 +137,11 @@ func (s *Statement) IsBusy() bool {
 }
 
 // IsExplain returns true if the  statement S is an EXPLAIN statement or an EXPLAIN QUERY PLAN
+/*
 func (s *Statement) IsExplain() bool {
 	return intToBool(int(C.sqlite3_stmt_isexplain((*C.sqlite3_stmt)(s))))
 }
+*/
 
 // IsReadonly returns true if the statement makes no direct changes to the content of the database file.
 func (s *Statement) IsReadonly() bool {

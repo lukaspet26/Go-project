@@ -4,6 +4,7 @@ package sqlite3
 #cgo pkg-config: sqlite3
 #include <sqlite3.h>
 #include <stdlib.h>
+#include <stdint.h>
 
 extern int go_busy_handler(void* userInfo, int n);
 static inline int _sqlite3_busy_handler(sqlite3* db, uintptr_t userInfo) {
@@ -50,6 +51,7 @@ import "C"
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"sync"
 	"time"
@@ -346,9 +348,6 @@ func (c *ConnEx) Exec(q string, fn ExecFunc) error {
 // each row of data returned, otherwise return true from the callback to abort the
 // transaction.
 func (c *ConnEx) ExecEx(q string, fn ExecFunc, v ...interface{}) error {
-	c.xmu.Lock()
-	defer c.xmu.Unlock()
-
 	// Prepare statements
 	st, err := c.Prepare(q)
 	if err != nil {
@@ -505,6 +504,7 @@ func go_authorizer_hook(userInfo unsafe.Pointer, op C.int, a1, a2, a3, a4 *C.cha
 
 //export go_exec_handler
 func go_exec_handler(userInfo unsafe.Pointer, nargs C.int, row, cols **C.char) C.int {
+	fmt.Println("nargs=", nargs, "row=", row, "cols=", cols)
 	if c := cb.get(uintptr(userInfo)); c != nil && c.ExecFunc != nil {
 		return C.int(boolToInt(c.ExecFunc(go_string_slice(int(nargs), row), go_string_slice(int(nargs), cols))))
 	} else {

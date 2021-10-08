@@ -19,7 +19,7 @@ func Test_Schema_001(t *testing.T) {
 	// Create the pool
 	pool, err := NewPool("", errs)
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 	defer pool.Close()
 
@@ -50,9 +50,10 @@ func Test_Schema_002(t *testing.T) {
 			"main": filepath.Join(tmpdir, "main.sqlite"),
 			"test": filepath.Join(tmpdir, "test.sqlite"),
 		},
+		Create: true,
 	}, errs)
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 	defer pool.Close()
 
@@ -83,14 +84,15 @@ func Test_Schema_003(t *testing.T) {
 			"main": filepath.Join(tmpdir, "main.sqlite"),
 			"test": filepath.Join(tmpdir, "test.sqlite"),
 		},
+		Create: true,
 	}, errs)
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 	defer pool.Close()
 
 	// Create table_a and table_b in main schema
-	conn := pool.Get(context.Background())
+	conn := pool.Get(context.Background()).(*Conn)
 	if conn == nil {
 		t.Fatal("Unexpected nil connection")
 	}
@@ -146,9 +148,10 @@ func Test_Schema_004(t *testing.T) {
 			"main": filepath.Join(tmpdir, "main.sqlite"),
 			"test": filepath.Join(tmpdir, "test.sqlite"),
 		},
+		Create: true,
 	}, errs)
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 	defer pool.Close()
 
@@ -195,17 +198,19 @@ func Test_Schema_006(t *testing.T) {
 		Schemas: map[string]string{
 			"main": filepath.Join(tmpdir, "main.sqlite"),
 		},
+		Create: true,
 	}, errs)
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 	defer pool.Close()
 
 	// Create table_a and table_b in main schema
-	conn := pool.Get(context.Background())
+	conn := pool.Get(context.Background()).(*Conn)
 	if conn == nil {
 		t.Fatal("Unexpected nil connection")
 	}
+	defer pool.Put(conn)
 
 	// Create a table
 	if err := conn.Exec(N("table_a").CreateTable(
@@ -242,24 +247,26 @@ func Test_Schema_007(t *testing.T) {
 		Schemas: map[string]string{
 			"main": filepath.Join(tmpdir, "main.sqlite"),
 		},
-		Trace: true,
+		Trace:  true,
+		Create: true,
 	}, errs)
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 	defer pool.Close()
 
 	// Create table_a and table_b in main schema
-	conn := pool.Get(context.Background())
+	conn := pool.Get(context.Background()).(*Conn)
 	if conn == nil {
 		t.Fatal("Unexpected nil connection")
 	}
+	defer pool.Put(conn)
 
 	// Create a table
 	if err := conn.Exec(N("table_a").CreateTable(
 		C("a").WithType("INTEGER").WithAutoIncrement(),
 		C("b").NotNull(),
-		C("c").WithType("TIMESTAMP").WithDefault(0),
+		C("c").WithType("TIMESTAMP"),
 	), nil); err != nil {
 		t.Error(err)
 	}
@@ -273,7 +280,7 @@ func Test_Schema_007(t *testing.T) {
 	indexes := conn.IndexesForTable("main", "table_a")
 	if indexes == nil {
 		t.Errorf("Unexpected return from indexes: %q", indexes)
-	} else if len(indexes) != 3 {
+	} else if len(indexes) != 1 {
 		t.Errorf("Unexpected return from indexes: %q", indexes)
 	} else {
 		t.Logf("indexes: %q", indexes)

@@ -3,6 +3,7 @@ package sqlite3
 import (
 	"context"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 
 	// Namespace Imports
 	. "github.com/djthorpe/go-errors"
+	. "github.com/djthorpe/go-sqlite"
 	. "github.com/djthorpe/go-sqlite/pkg/lang"
 	. "github.com/djthorpe/go-sqlite/pkg/quote"
 )
@@ -25,9 +27,11 @@ import (
 
 // PoolConfig is the starting configuration for a pool
 type PoolConfig struct {
-	Max     int64             `yaml:"max"`   // The maximum number of connections in the pool
-	Schemas map[string]string `yaml:"db"`    // Schema names mapped onto path for database file
-	Trace   bool              `yaml:"trace"` // Profiling for statements
+	Max     int32             `yaml:"max"`       // The maximum number of connections in the pool
+	Schemas map[string]string `yaml:"databases"` // Schema names mapped onto path for database file
+	Trace   bool              `yaml:"trace"`     // Profiling for statements
+	Create  bool              `yaml:"create"`    // When false, do not allow creation of new file-based databases
+	Auth    SQAuth            // Authentication and Authorization interface
 	Flags   sqlite3.OpenFlags // Flags for opening connections
 }
 
@@ -41,7 +45,7 @@ type Pool struct {
 	errs   chan<- error
 	ctx    context.Context
 	cancel context.CancelFunc
-	n      int64
+	n      int32
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -52,8 +56,9 @@ var (
 	defaultPoolConfig = PoolConfig{
 		Max:     5,
 		Trace:   false,
+		Create:  true,
 		Schemas: map[string]string{defaultSchema: defaultMemory},
-		Flags:   sqlite3.DefaultFlags | sqlite3.SQLITE_OPEN_SHAREDCACHE,
+		Flags:   sqlite3.SQLITE_OPEN_CREATE | sqlite3.SQLITE_OPEN_READWRITE | sqlite3.SQLITE_OPEN_SHAREDCACHE,
 	}
 )
 
@@ -80,12 +85,19 @@ func OpenPool(config PoolConfig, errs chan<- error) (*Pool, error) {
 	if config.Max == 0 {
 		config.Max = defaultPoolConfig.Max
 	} else {
-		config.Max = maxInt64(config.Max, 1)
+		config.Max = maxInt32(config.Max, 1)
 	}
 
 	// Set default flags if not set
 	if config.Flags == 0 {
 		config.Flags = defaultPoolConfig.Flags
+	}
+
+	// Update create flag
+	if config.Create {
+		config.Flags |= sqlite3.SQLITE_OPEN_CREATE
+	} else {
+		config.Flags &^= sqlite3.SQLITE_OPEN_CREATE
 	}
 
 	// Set up pool
@@ -130,6 +142,7 @@ func (p *Pool) Close() error {
 
 func (p *Pool) String() string {
 	str := "<pool"
+	str += fmt.Sprintf(" ver=%q", Version())
 	str += fmt.Sprint(" cur=", p.Cur())
 	str += fmt.Sprint(" max=", p.Max())
 	str += fmt.Sprint(" flags=", p.Flags)
@@ -143,26 +156,26 @@ func (p *Pool) String() string {
 // PUBLIC METHODS
 
 // Max returns the maximum number of connections allowed
-func (p *Pool) Max() int64 {
-	return atomic.LoadInt64(&p.PoolConfig.Max)
+func (p *Pool) Max() int32 {
+	return atomic.LoadInt32(&p.PoolConfig.Max)
 }
 
 // SetMax allowed connections released from pool. Note this does not change
 // the maximum instantly, it will settle to this value over time. Set as value
 // zero to disable opening new connections
-func (p *Pool) SetMax(n int64) {
-	atomic.StoreInt64(&p.PoolConfig.Max, maxInt64(n, 0))
+func (p *Pool) SetMax(n int32) {
+	atomic.StoreInt32(&p.PoolConfig.Max, maxInt32(n, 0))
 }
 
 // Cur returns the current number of used connections
-func (p *Pool) Cur() int64 {
-	return atomic.LoadInt64(&p.n)
+func (p *Pool) Cur() int32 {
+	return atomic.LoadInt32(&p.n)
 }
 
 // Get a connection from the pool, and return it to the pool when the context
 // is cancelled or it is put back using the Put method. If there are no
 // connections available, nil is returned.
-func (p *Pool) Get(ctx context.Context) *Conn {
+func (p *Pool) Get(ctx context.Context) SQConnection {
 	// Return error if maximum number of connections has been reached
 	if p.Cur() >= p.Max() {
 		p.err(ErrChannelBlocked.Withf("Maximum number of connections (%d) reached", p.Cur()))
@@ -177,7 +190,7 @@ func (p *Pool) Get(ctx context.Context) *Conn {
 		panic("Expected conn.c to be nil")
 	} else {
 		conn.c = make(chan struct{})
-		atomic.AddInt64(&p.n, 1)
+		atomic.AddInt32(&p.n, 1)
 	}
 
 	// Release the connection in the background
@@ -199,9 +212,11 @@ func (p *Pool) Get(ctx context.Context) *Conn {
 }
 
 // Return connection to the pool
-func (p *Pool) Put(conn *Conn) {
-	if conn != nil {
+func (p *Pool) Put(conn SQConnection) {
+	if conn, ok := conn.(*Conn); ok {
 		conn.c <- struct{}{}
+	} else {
+		panic(ErrBadParameter.With("Put"))
 	}
 }
 
@@ -216,9 +231,25 @@ func (p *Pool) new() (*Conn, error) {
 	if defaultPath == "" {
 		return nil, ErrNotFound.Withf("No default schema %q found", defaultSchema)
 	}
-	conn, err := OpenPath(defaultPath, p.Flags)
+
+	// Always allow memory databases to be created
+	flags := p.Flags
+	if defaultPath == defaultMemory {
+		flags |= sqlite3.SQLITE_OPEN_CREATE
+	}
+
+	// Perform the open
+	conn, err := OpenPath(defaultPath, flags)
 	if err != nil {
 		return nil, err
+	}
+
+	// Set trace
+	if p.PoolConfig.Trace {
+		conn.SetTraceHook(func(_ sqlite3.TraceType, a, b unsafe.Pointer) int {
+			p.trace(conn, (*sqlite3.Statement)(a), *(*int64)(b))
+			return 0
+		}, sqlite3.SQLITE_TRACE_PROFILE)
 	}
 
 	// Attach additional databases
@@ -226,7 +257,7 @@ func (p *Pool) new() (*Conn, error) {
 	for schema := range p.Schemas {
 		schema = strings.TrimSpace(schema)
 		path := p.pathForSchema(schema)
-		if path == defaultPath {
+		if schema == defaultSchema {
 			continue
 		}
 		if path == "" {
@@ -236,12 +267,16 @@ func (p *Pool) new() (*Conn, error) {
 		}
 	}
 
-	// Set trace
-	if p.PoolConfig.Trace {
-		conn.SetTraceHook(func(_ sqlite3.TraceType, a, b unsafe.Pointer) int {
-			p.trace(conn, (*sqlite3.Statement)(a), *(*int64)(b))
-			return 0
-		}, sqlite3.SQLITE_TRACE_PROFILE)
+	// Set auth
+	if p.PoolConfig.Auth != nil {
+		conn.SetAuthorizerHook(func(action sqlite3.SQAction, args [4]string) sqlite3.SQAuth {
+			if err := p.auth(conn.ctx, action, args); err == nil {
+				return sqlite3.SQLITE_ALLOW
+			} else {
+				p.err(err)
+				return sqlite3.SQLITE_DENY
+			}
+		})
 	}
 
 	// Check for errors
@@ -262,7 +297,7 @@ func (p *Pool) put(conn *Conn) {
 		conn.c = nil
 	}
 	// Choose to put back into pool or close connection
-	n := atomic.AddInt64(&p.n, -1)
+	n := atomic.AddInt32(&p.n, -1)
 	if n >= p.Max() {
 		p.Pool.Put(conn)
 	} else if err := conn.Close(); err != nil {
@@ -294,14 +329,6 @@ func (p *Pool) err(err error) {
 	}
 }
 
-// maxInt64 returns the maximum of two values
-func maxInt64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 // Attach database as schema. If path is empty then a new in-memory database
 // is attached.
 func (p *Pool) attach(conn *Conn, schema, path string) error {
@@ -311,15 +338,43 @@ func (p *Pool) attach(conn *Conn, schema, path string) error {
 	if path == "" {
 		return p.attach(conn, schema, defaultMemory)
 	}
-	return conn.Exec(Q("ATTACH DATABASE ", DoubleQuote(path), " AS ", QuoteIdentifier(schema)), nil)
+	// Create a new database or return an error if it doesn't exist
+	if path != defaultMemory {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			if err := p.attachCreate(path); err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		}
+	}
+	return conn.Exec(Q("ATTACH DATABASE ", Quote(path), " AS ", QuoteIdentifier(schema)), nil)
 }
 
-// Detach named database as schema
-func (p *Pool) detach(conn *Conn, schema string) error {
-	return conn.Exec(Q("DETACH DATABASE ", QuoteIdentifier(schema)), nil)
+// Create a database before attaching
+func (p *Pool) attachCreate(path string) error {
+	if p.PoolConfig.Flags&sqlite3.SQLITE_OPEN_CREATE == 0 {
+		return ErrBadParameter.Withf("Database does not exist: %q", path)
+	}
+	// Open then close database before attaching
+	if conn, err := sqlite3.OpenPath(path, p.PoolConfig.Flags, ""); err != nil {
+		return err
+	} else if err := conn.Close(); err != nil {
+		return err
+	} else {
+		return nil
+	}
 }
 
 // Trace
 func (p *Pool) trace(c *Conn, s *sqlite3.Statement, ns int64) {
 	fmt.Printf("TRACE %q => %v\n", s, time.Duration(ns)*time.Nanosecond)
+}
+
+// maxInt32 returns the maximum of two values
+func maxInt32(a, b int32) int32 {
+	if a > b {
+		return a
+	}
+	return b
 }
