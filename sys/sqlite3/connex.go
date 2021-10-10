@@ -51,7 +51,6 @@ import "C"
 
 import (
 	"errors"
-	"fmt"
 	"reflect"
 	"sync"
 	"time"
@@ -155,6 +154,12 @@ func OpenUrlEx(url string, flags OpenFlags, vfs string) (*ConnEx, error) {
 // Open Path (with busy and progress handlers)
 func OpenPathEx(path string, flags OpenFlags, vfs string) (*ConnEx, error) {
 	c := new(ConnEx)
+
+	// Add RW flag if CREATE flag is set
+	if flags&SQLITE_OPEN_CREATE != 0 {
+		flags |= SQLITE_OPEN_READWRITE
+	}
+
 	if conn, err := OpenPath(path, flags, vfs); err != nil {
 		return nil, err
 	} else {
@@ -504,7 +509,6 @@ func go_authorizer_hook(userInfo unsafe.Pointer, op C.int, a1, a2, a3, a4 *C.cha
 
 //export go_exec_handler
 func go_exec_handler(userInfo unsafe.Pointer, nargs C.int, row, cols **C.char) C.int {
-	fmt.Println("nargs=", nargs, "row=", row, "cols=", cols)
 	if c := cb.get(uintptr(userInfo)); c != nil && c.ExecFunc != nil {
 		return C.int(boolToInt(c.ExecFunc(go_string_slice(int(nargs), row), go_string_slice(int(nargs), cols))))
 	} else {
