@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"html"
 	"html/template"
@@ -57,11 +58,11 @@ type SchemaTableResponse struct {
 
 type SchemaColumnResponse struct {
 	Name     string `json:"name"`
-	Table    string `json:"table"`
-	Schema   string `json:"schema"`
-	Type     string `json:"type"`
-	Primary  bool   `json:"primary"`
-	Nullable bool   `json:"nullable"`
+	Table    string `json:"table,omitempty"`
+	Schema   string `json:"schema,omitempty"`
+	Type     string `json:"type,omitempty"`
+	Primary  bool   `json:"primary,omitempty"`
+	Nullable bool   `json:"nullable,omitempty"`
 }
 
 type SchemaIndexResponse struct {
@@ -75,10 +76,16 @@ type SqlRequest struct {
 }
 
 type SqlResultResponse struct {
-	Sql []string `json:"sql"`
+	Schema       string                 `json:"schema,omitempty"`
+	Table        string                 `json:"table,omitempty"`
+	Sql          string                 `json:"sql"`
+	LastInsertId int64                  `json:"last_insert_id,omitempty"`
+	RowsAffected int                    `json:"rows_affected,omitempty"`
+	Columns      []SchemaColumnResponse `json:"columns,omitempty"`
+	Results      []interface{}          `json:"results,omitempty"`
 }
 
-type SyntaxResponse struct {
+type TokenizerResponse struct {
 	Html     []template.HTML `json:"html,omitempty"`
 	Complete bool            `json:"complete"`
 }
@@ -87,10 +94,11 @@ type SyntaxResponse struct {
 // ROUTES
 
 var (
-	reRoutePing     = regexp.MustCompile(`^/?$`)
-	reRouteSchema   = regexp.MustCompile(`^/([a-zA-Z][a-zA-Z0-9_-]+)/?$`)
-	reRouteSyntaxer = regexp.MustCompile(`^/-/syntax/?$`)
-	reRouteQuery    = regexp.MustCompile(`^/-/q/?$`)
+	reRoutePing      = regexp.MustCompile(`^/?$`)
+	reRouteSchema    = regexp.MustCompile(`^/([a-zA-Z][a-zA-Z0-9_-]+)/?$`)
+	reRouteTable     = regexp.MustCompile(`^/([a-zA-Z][a-zA-Z0-9_-]+)/([^/]+)/?$`)
+	reRouteTokenizer = regexp.MustCompile(`^/-/tokenize/?$`)
+	reRouteQuery     = regexp.MustCompile(`^/-/q/?$`)
 )
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -114,8 +122,13 @@ func (p *plugin) AddHandlers(ctx context.Context, provider Provider) error {
 		return err
 	}
 
-	// Add handler for SQL syntax checker
-	if err := provider.AddHandlerFuncEx(ctx, reRouteSyntaxer, p.ServeSyntaxer, http.MethodPost); err != nil {
+	// Add handler for table
+	if err := provider.AddHandlerFuncEx(ctx, reRouteTable, p.ServeTable); err != nil {
+		return err
+	}
+
+	// Add handler for SQL tokenizer
+	if err := provider.AddHandlerFuncEx(ctx, reRouteTokenizer, p.ServeTokenizer, http.MethodPost); err != nil {
 		return err
 	}
 
@@ -201,16 +214,7 @@ func (p *plugin) ServeSchema(w http.ResponseWriter, req *http.Request) {
 			})
 		}
 		for _, column := range conn.ColumnsForTable(params[0], name) {
-			col := SchemaColumnResponse{
-				Name:   column.Name(),
-				Table:  name,
-				Schema: params[0],
-				Type:   column.Type(),
-			}
-			if column.Primary() != "" {
-				col.Primary = true
-			}
-			table.Columns = append(table.Columns, col)
+			table.Columns = append(table.Columns, schemaColumn(params[0], name, column))
 		}
 		response.Tables = append(response.Tables, table)
 	}
@@ -219,7 +223,69 @@ func (p *plugin) ServeSchema(w http.ResponseWriter, req *http.Request) {
 	router.ServeJSON(w, response, http.StatusOK, 2)
 }
 
-func (p *plugin) ServeSyntaxer(w http.ResponseWriter, req *http.Request) {
+func (p *plugin) ServeTable(w http.ResponseWriter, req *http.Request) {
+	// Query parameters
+	var q struct {
+		Offset uint `json:"offset"`
+		Limit  uint `json:"limit"`
+	}
+
+	// Decode params, params[0] is the schema name and params[1] is the table name
+	params := router.RequestParams(req)
+
+	// Decode query
+	if err := router.RequestQuery(req, &q); err != nil {
+		router.ServeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Get a connection
+	conn := p.Get(req.Context())
+	if conn == nil {
+		router.ServeError(w, http.StatusBadGateway, "No connection")
+		return
+	}
+	defer p.Put(conn)
+
+	// Check for schema
+	if !stringSliceContainsElement(conn.Schemas(), params[0]) {
+		router.ServeError(w, http.StatusNotFound, "Schema not found", strconv.Quote(params[0]))
+		return
+	}
+	if !stringSliceContainsElement(conn.Tables(params[0]), params[1]) {
+		router.ServeError(w, http.StatusNotFound, "Table not found", strconv.Quote(params[1]))
+		return
+	}
+
+	// Fix limit to ensure we only steam up to 1K results
+	q.Limit = uintMin(q.Limit, maxResultLimit)
+
+	// Populate response
+	var response SqlResultResponse
+	if err := conn.Do(req.Context(), SQLITE_TXN_DEFAULT, func(txn SQTransaction) error {
+		r, err := txn.Query(S(N(params[1]).WithSchema(params[0])).WithLimitOffset(q.Limit, q.Offset))
+		if err != nil {
+			return err
+		}
+		if r, err := results(r); err != nil {
+			return err
+		} else {
+			response = r
+			response.Schema = params[0]
+			response.Table = params[1]
+		}
+		// Return success
+		return nil
+	}); err != nil {
+		router.ServeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Serve response
+	router.ServeJSON(w, response, http.StatusOK, 2)
+}
+
+func (p *plugin) ServeTokenizer(w http.ResponseWriter, req *http.Request) {
 	// Decode request
 	query := SqlRequest{}
 	if err := router.RequestBody(req, &query); err != nil {
@@ -243,7 +309,7 @@ func (p *plugin) ServeSyntaxer(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Populate response
-	response := SyntaxResponse{
+	response := TokenizerResponse{
 		Html:     html,
 		Complete: sqlite3.IsComplete(query.Sql),
 	}
@@ -269,11 +335,23 @@ func (p *plugin) ServeQuery(w http.ResponseWriter, req *http.Request) {
 	defer p.Put(conn)
 
 	// Perform query
-	response := make([]SqlResultResponse, 0)
+	response := make([]SqlResultResponse, 0, 2)
 	if err := conn.Do(req.Context(), SQLITE_TXN_DEFAULT, func(txn SQTransaction) error {
-		_, err := txn.Query(Q(query.Sql))
+		r, err := txn.Query(Q(query.Sql))
 		if err != nil {
 			return err
+		}
+		for {
+			if r, err := results(r); err != nil {
+				return err
+			} else {
+				response = append(response, r)
+			}
+			if err := r.NextQuery(); errors.Is(err, io.EOF) {
+				break
+			} else if err != nil {
+				return err
+			}
 		}
 		// Return success
 		return nil
@@ -288,6 +366,58 @@ func (p *plugin) ServeQuery(w http.ResponseWriter, req *http.Request) {
 
 ///////////////////////////////////////////////////////////////////////////////
 // PRIVATE METHODS
+
+func schemaColumn(schema, table string, column SQColumn) SchemaColumnResponse {
+	result := SchemaColumnResponse{
+		Name:   column.Name(),
+		Table:  table,
+		Schema: schema,
+		Type:   column.Type(),
+	}
+	if column.Primary() != "" {
+		result.Primary = true
+	}
+	return result
+}
+
+func results(r SQResults) (SqlResultResponse, error) {
+	result := SqlResultResponse{
+		Sql:          r.ExpandedSQL(),
+		LastInsertId: r.LastInsertId(),
+		RowsAffected: r.RowsAffected(),
+		Columns:      []SchemaColumnResponse{},
+	}
+
+	// Set the columns
+	for i, column := range r.Columns() {
+		schema, table, _ := r.ColumnSource(i)
+		result.Columns = append(result.Columns, schemaColumn(schema, table, column))
+	}
+
+	// Iterate through the rows, break when maximum number of results is reached
+	for {
+		row, err := r.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return result, err
+		} else {
+			result.Results = append(result.Results, interfaceSliceCopy(row))
+		}
+		if len(result.Results) >= maxResultLimit {
+			break
+		}
+	}
+
+	// Return success
+	return result, nil
+}
+
+func interfaceSliceCopy(v []interface{}) []interface{} {
+	result := make([]interface{}, len(v))
+	copy(result, v)
+	return result
+}
 
 func stringSliceContainsElement(v []string, elem string) bool {
 	for _, v := range v {

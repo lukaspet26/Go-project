@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"reflect"
 	"strings"
 )
 
@@ -88,28 +89,37 @@ type SQConnection interface {
 // SQTransaction is an sqlite transaction
 type SQTransaction interface {
 	// Query and return a set of results
-	Query(SQStatement, ...interface{}) (SQResult, error)
+	Query(SQStatement, ...interface{}) (SQResults, error)
 }
 
-// SQResult increments over returned rows from a query
-type SQResult interface {
+// SQResults increments over returned rows from a query
+type SQResults interface {
 	// Return next row, returns nil when all rows consumed
-	Next() []interface{}
+	// if types are provided, then returned row is cast to
+	// appopriate types. The returned row needs to be copied
+	// if not transient
+	Next(...reflect.Type) ([]interface{}, error)
 
 	// Return next map of values, or nil if no more rows
-	NextMap() map[string]interface{}
+	//NextMap() map[string]interface{}
 
 	// NextQuery executes the next query or returns io.EOF
 	NextQuery(...interface{}) error
 
-	// Close the rows, and free up any resources
-	Close() error
+	// Return the SQL for the last statement
+	ExpandedSQL() string
 
 	// Return Last RowID inserted of last statement
 	LastInsertId() int64
 
 	// Return number of changes made of last statement
-	RowsAffected() int64
+	RowsAffected() int
+
+	// Columns returns the column definitions
+	Columns() []SQColumn
+
+	// ColumnTable returns the schema, table and column name for a column index
+	ColumnSource(int) (string, string, string)
 }
 
 // SQAuth is an interface for authenticating an action

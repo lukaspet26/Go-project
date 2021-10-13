@@ -40,7 +40,6 @@ type Pool struct {
 	sync.WaitGroup
 	sync.Pool
 	PoolConfig
-	PoolCache
 
 	errs   chan<- error
 	ctx    context.Context
@@ -58,7 +57,7 @@ var (
 		Trace:   false,
 		Create:  true,
 		Schemas: map[string]string{defaultSchema: defaultMemory},
-		Flags:   sqlite3.SQLITE_OPEN_CREATE | sqlite3.SQLITE_OPEN_READWRITE | sqlite3.SQLITE_OPEN_SHAREDCACHE,
+		Flags:   sqlite3.SQLITE_OPEN_CREATE | sqlite3.SQLITE_OPEN_SHAREDCACHE | sqlite3.SQLITE_OPEN_CONNCACHE,
 	}
 )
 
@@ -301,7 +300,11 @@ func (p *Pool) put(conn *Conn) {
 	n := atomic.AddInt32(&p.n, -1)
 	if n < p.Max() {
 		p.Pool.Put(conn)
-	} else if err := conn.Close(); err != nil {
+		return
+	}
+
+	// Close connection and remove from cache
+	if err := conn.Close(); err != nil {
 		p.err(err)
 	}
 }

@@ -22,6 +22,8 @@ import (
 type Conn struct {
 	sync.Mutex
 	*sqlite3.ConnEx
+	ConnCache
+
 	c   chan struct{}
 	ctx context.Context
 }
@@ -37,7 +39,7 @@ type TxnFunc func(SQTransaction) error
 // LIFECYCLE
 
 func OpenPath(path string, flags sqlite3.OpenFlags) (*Conn, error) {
-	poolconn := new(Conn)
+	conn := new(Conn)
 
 	// If no create flag then check to make sure database exists
 	if path != defaultMemory && flags&sqlite3.SQLITE_OPEN_CREATE == 0 {
@@ -49,22 +51,29 @@ func OpenPath(path string, flags sqlite3.OpenFlags) (*Conn, error) {
 	}
 
 	// Open database with flags
-	if conn, err := sqlite3.OpenPathEx(path, flags, ""); err != nil {
+	if c, err := sqlite3.OpenPathEx(path, flags, ""); err != nil {
 		return nil, err
 	} else {
-		poolconn.ConnEx = conn
+		conn.ConnEx = c
+	}
+
+	// Set cache to default size
+	if flags&sqlite3.SQLITE_OPEN_CONNCACHE != 0 {
+		conn.SetCap(defaultCapacity)
+	} else {
+		conn.SetCap(0)
 	}
 
 	// Finalizer to panic when connection not closed before garbage collection
 	_, file, line, _ := runtime.Caller(1)
-	runtime.SetFinalizer(poolconn, func(conn *Conn) {
+	runtime.SetFinalizer(conn, func(conn *Conn) {
 		if conn.c != nil {
 			panic(fmt.Sprintf("%s:%d: missing associated call to Close()", file, line))
 		}
 	})
 
 	// Return success
-	return poolconn, nil
+	return conn, nil
 }
 
 func (conn *Conn) Close() error {
@@ -137,36 +146,42 @@ func (conn *Conn) Do(ctx context.Context, flag SQTxnFlag, fn func(SQTransaction)
 
 	// Commit or rollback transaction
 	if result == nil {
-		result = multierror.Append(result, conn.ConnEx.Commit())
+		if err := conn.ConnEx.Commit(); err != nil {
+			result = multierror.Append(result, err)
+		}
 	} else {
-		result = multierror.Append(result, conn.ConnEx.Rollback())
+		if err := conn.ConnEx.Rollback(); err != nil {
+			result = multierror.Append(result, err)
+		}
 	}
 
-	// Return foreign key constraints
-	result = multierror.Append(result, conn.SetForeignKeyConstraints(fk))
+	// Return foreign key constraints to previous value
+	if flag&SQLITE_TXN_NO_FOREIGNKEY_CONSTRAINTS != 0 {
+		if err := conn.SetForeignKeyConstraints(fk); err != nil {
+			result = multierror.Append(result, err)
+		}
+	}
 
 	// Return any errors
 	return result
 }
 
 // Execute SQL statement and invoke a callback for each row of results which may return true to abort
-func (txn *Txn) Query(st SQStatement, v ...interface{}) (SQResult, error) {
+func (txn *Txn) Query(st SQStatement, v ...interface{}) (SQResults, error) {
 	if st == nil {
 		return nil, ErrBadParameter.With("Query")
 	}
 
-	// TODO: Get prepared version of query from the cache
-	stx, err := txn.Conn.Prepare(st.Query())
+	// Get a results object
+	r, err := txn.ConnCache.Prepare(txn.Conn.ConnEx, st.Query())
 	if err != nil {
 		return nil, err
 	}
 
-	// Create a results object and return it
-	results, err := stx.Exec(0, v...)
-	if err != nil {
-		stx.Close()
+	// Execute first query
+	if err := r.NextQuery(v...); err != nil {
 		return nil, err
+	} else {
+		return r, nil
 	}
-
-	return NewResults(results), nil
 }

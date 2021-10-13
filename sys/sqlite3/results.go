@@ -2,6 +2,7 @@ package sqlite3
 
 import (
 	"fmt"
+	"io"
 	"reflect"
 
 	"github.com/hashicorp/go-multierror"
@@ -11,9 +12,11 @@ import (
 // TYPES
 
 type Results struct {
-	st   *Statement
-	err  error
-	cols []interface{}
+	st      *Statement
+	err     error
+	cols    []interface{}
+	rowid   int64
+	changes int
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -29,6 +32,12 @@ var (
 
 func (r *Results) String() string {
 	str := "<results"
+	if r.rowid != 0 {
+		str += fmt.Sprintf(" lastinsertid=%v", r.rowid)
+	}
+	if r.changes != 0 {
+		str += fmt.Sprintf(" rowsaffected=%v", r.changes)
+	}
 	if r.st != nil {
 		str += " " + r.st.String()
 	}
@@ -47,6 +56,8 @@ func results(st *Statement, err error) *Results {
 	r.st = st
 	r.err = err
 	r.cols = make([]interface{}, 0, st.ColumnCount())
+	r.rowid = st.Conn().LastInsertId()
+	r.changes = st.Conn().Changes()
 	return r
 }
 
@@ -57,12 +68,12 @@ func results(st *Statement, err error) *Results {
 func (r *Results) Next(t ...reflect.Type) ([]interface{}, error) {
 	var result error
 
-	// If no more results, return nil,nil
+	// If no more results, return nil,io.EOF
 	if r.err == SQLITE_DONE {
 		r.st.Reset()
 		r.st = nil
 		r.cols = nil
-		return nil, nil
+		return nil, io.EOF
 	}
 
 	// Check for SQLITE_ROW result, abort result if error occurred
@@ -102,17 +113,21 @@ func (r *Results) Next(t ...reflect.Type) ([]interface{}, error) {
 	return r.cols, nil
 }
 
-// Return column names for the next row to be fetched
-func (r *Results) ColumnNames() []string {
+func (r *Results) LastInsertId() int64 {
+	return r.rowid
+}
+
+func (r *Results) RowsAffected() int {
+	return r.changes
+}
+
+// Return the expanded SQL statement
+func (r *Results) ExpandedSQL() string {
 	if r.st == nil {
-		return nil
+		return ""
+	} else {
+		return r.st.ExpandedSQL()
 	}
-	len := r.st.ColumnCount()
-	result := make([]string, len)
-	for i := 0; i < len; i++ {
-		result[i] = r.st.ColumnName(i)
-	}
-	return result
 }
 
 // Return column count
@@ -120,69 +135,52 @@ func (r *Results) ColumnCount() int {
 	return r.st.ColumnCount()
 }
 
-// Return column types for the next row to be fetched
-func (r *Results) ColumnTypes() []Type {
+// Return column name
+func (r *Results) ColumnName(i int) string {
 	if r.st == nil {
-		return nil
+		return ""
 	}
-	len := r.st.ColumnCount()
-	result := make([]Type, len)
-	for i := 0; i < len; i++ {
-		result[i] = r.st.ColumnType(i)
-	}
-	return result
+	return r.st.ColumnName(i)
 }
 
-// Return column decltypes for the next row to be fetched
-func (r *Results) ColumnDeclTypes() []string {
+// Return column type
+func (r *Results) ColumnType(i int) Type {
 	if r.st == nil {
-		return nil
+		return SQLITE_NULL
 	}
-	len := r.st.ColumnCount()
-	result := make([]string, len)
-	for i := 0; i < len; i++ {
-		result[i] = r.st.ColumnDeclType(i)
-	}
-	return result
+	return r.st.ColumnType(i)
 }
 
-// Return the source database schema name for the next row to be fetched
-func (r *Results) ColumnDatabaseNames() []string {
+// Return column decltype
+func (r *Results) ColumnDeclType(i int) string {
 	if r.st == nil {
-		return nil
+		return ""
 	}
-	len := r.st.ColumnCount()
-	result := make([]string, len)
-	for i := 0; i < len; i++ {
-		result[i] = r.st.ColumnDatabaseName(i)
-	}
-	return result
+	return r.st.ColumnDeclType(i)
 }
 
-// Return the source table name for the next row to be fetched
-func (r *Results) ColumnTableNames() []string {
+// Return the source database schema name
+func (r *Results) ColumnDatabaseName(i int) string {
 	if r.st == nil {
-		return nil
+		return ""
 	}
-	len := r.st.ColumnCount()
-	result := make([]string, len)
-	for i := 0; i < len; i++ {
-		result[i] = r.st.ColumnTableName(i)
-	}
-	return result
+	return r.st.ColumnDatabaseName(i)
 }
 
-// Return the origin for the next row to be fetched
-func (r *Results) ColumnOriginNames() []string {
+// Return the source table name
+func (r *Results) ColumnTableName(i int) string {
 	if r.st == nil {
-		return nil
+		return ""
 	}
-	len := r.st.ColumnCount()
-	result := make([]string, len)
-	for i := 0; i < len; i++ {
-		result[i] = r.st.ColumnOriginName(i)
+	return r.st.ColumnTableName(i)
+}
+
+// Return the origin
+func (r *Results) ColumnOriginName(i int) string {
+	if r.st == nil {
+		return ""
 	}
-	return result
+	return r.st.ColumnOriginName(i)
 }
 
 ///////////////////////////////////////////////////////////////////////////////

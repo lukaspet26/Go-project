@@ -2,7 +2,9 @@ package sqlite3_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -44,10 +46,10 @@ func Test_SQLiteEx_001(t *testing.T) {
 		}
 		t.Log(r)
 		for {
-			if row, err := r.Next(); err != nil {
-				t.Error(err)
+			if row, err := r.Next(); errors.Is(err, io.EOF) {
 				break
-			} else if row == nil {
+			} else if err != nil {
+				t.Error(err)
 				break
 			} else {
 				t.Log(row)
@@ -73,9 +75,12 @@ func Test_SQLiteEx_002(t *testing.T) {
 	defer cancel()
 	if err := db.SetProgressHandler(1000, func() bool {
 		t.Log("Long running query...")
+		if ctx.Err() != nil {
+			t.Log(" got err=", ctx.Err())
+		}
 		return ctx.Err() != nil
 	}); err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 
 	// Add busy handler with context timeout
@@ -83,7 +88,7 @@ func Test_SQLiteEx_002(t *testing.T) {
 		t.Log("Called busy handler with n=", n)
 		return true
 	}); err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 
 	// Add auth handler
@@ -91,22 +96,33 @@ func Test_SQLiteEx_002(t *testing.T) {
 		t.Logf("Called auth handler with %v %q", action, args)
 		return sqlite3.SQLITE_ALLOW
 	}); err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 
 	// Run long running query, expect interrupted error
-	if st, err := db.Prepare(longRunningQuery); err != nil {
-		t.Error(err)
-	} else if r, err := st.Exec(0, 99999999); err != nil && err != sqlite3.SQLITE_INTERRUPT {
-		t.Error("Error returned:", err)
-	} else if r != nil {
-		t.Log(r)
+	st, err := db.Prepare(longRunningQuery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	r, err := st.Exec(0, int64(99999999))
+	if err != nil && err != sqlite3.SQLITE_INTERRUPT {
+		t.Fatal("Error returned:", err)
+	} else if err == sqlite3.SQLITE_INTERRUPT {
+		t.Log("Query result interrupted")
+	} else if r == nil {
+		t.Fatal("Unexpected nil return")
+	}
+	if r != nil {
 		for {
 			row, err := r.Next()
-			if err != nil {
-				t.Error(err)
+			if errors.Is(err, io.EOF) {
+				break
+			} else if err != nil {
+				t.Fatal(err)
 				break
 			} else if row == nil {
+				t.Error("Unexpected nil return")
 				break
 			}
 			t.Log(row)
