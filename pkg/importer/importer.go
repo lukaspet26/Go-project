@@ -1,31 +1,25 @@
-package sqimport
+package importer
 
 import (
+	"errors"
 	"io"
 	"net/url"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	// Namespace Imports
-	. "github.com/djthorpe/go-errors"
 	. "github.com/djthorpe/go-sqlite"
-
-	// Modules
-	multierror "github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/go-multierror"
 )
 
 ///////////////////////////////////////////////////////////////////////////////
 // TYPES
 
 type Importer struct {
-	sync.Mutex
-	c        SQImportConfig
-	r        io.ReadCloser
-	w        SQWriter
-	dec      SQImportDecoder
-	url      *url.URL
-	mimetype string
+	c   SQImportConfig
+	w   SQImportWriter
+	fn  SQImportWriterFunc
+	url *url.URL
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -43,14 +37,15 @@ var (
 // LIFECYCLE
 
 // Create an importer with default configuation
-func DefaultImporter(url string, writer SQWriter) (*Importer, error) {
-	return NewImporter(DefaultConfig, url, writer)
+func DefaultImporter(url string, w SQImportWriter) (*Importer, error) {
+	return NewImporter(DefaultConfig, url, w)
 }
 
 // Create a new importer with a database writer
-func NewImporter(c SQImportConfig, u string, writer SQWriter) (*Importer, error) {
+func NewImporter(c SQImportConfig, u string, w SQImportWriter) (*Importer, error) {
 	this := &Importer{
 		c: c,
+		w: w,
 	}
 
 	// Set the URL source
@@ -58,13 +53,6 @@ func NewImporter(c SQImportConfig, u string, writer SQWriter) (*Importer, error)
 		return nil, err
 	} else {
 		this.url = url
-	}
-
-	// Set the writer
-	if writer == nil {
-		return nil, ErrBadParameter.With("Writer")
-	} else {
-		this.w = writer
 	}
 
 	// Set the table name and extension if not already set
@@ -91,69 +79,48 @@ func NewImporter(c SQImportConfig, u string, writer SQWriter) (*Importer, error)
 ///////////////////////////////////////////////////////////////////////////////
 // PUBLIC METHODS
 
-func (this *Importer) URL() *url.URL {
-	return this.url
+func (i *Importer) URL() *url.URL {
+	return i.url
 }
 
-func (this *Importer) Name() string {
-	return this.c.Name
+func (i *Importer) Name() string {
+	return i.c.Name
 }
 
 // Read a row from the source data and potentially insert into the table. On end
 // of data, returns io.EOF.
-func (this *Importer) ReadWrite() error {
+func (i *Importer) ReadWrite(dec SQImportDecoder) error {
 	var result error
 
-	this.Mutex.Lock()
-	defer this.Mutex.Unlock()
-
-	// Open the data source
-	if this.r == nil {
-		if r, mimetype, err := open(this.url); err != nil {
-			result = err
-			if err := this.w.Close(); err != nil {
-				result = multierror.Append(result, err)
-			}
-			return result
-		} else {
-			this.r = r
-			this.mimetype = mimetype
+	// Read next row, end transaction if at EOF or other error
+	cols, values, err := dec.Read()
+	if err != nil {
+		result = multierror.Append(result, err)
+		if err := i.w.End(errors.Is(err, io.EOF)); err != nil {
+			result = multierror.Append(result, err)
 		}
-		// Skip row
+	} else if cols == nil || values == nil {
 		return nil
 	}
 
-	// Set the decoder
-	if this.dec == nil {
-		if dec, err := this.Decoder(this.mimetype); err != nil {
-			result = err
-			if err := this.w.Close(); err != nil {
+	// Begin transaction, get function
+	if result == nil {
+		if i.fn == nil {
+			if fn, err := i.w.Begin(i.c.Name, i.c.Schema, cols); err != nil {
 				result = multierror.Append(result, err)
+			} else {
+				i.fn = fn
 			}
-			return result
-		} else {
-			this.dec = dec
 		}
-		// Skip row
-		return nil
 	}
 
-	// Read the row
-	if err := this.dec.Read(this.w); err != nil {
-		// Release resources
-		result = err
-		if err := this.r.Close(); err != nil {
+	// Write row
+	if result == nil && i.fn != nil {
+		if err := i.fn(values); err != nil {
 			result = multierror.Append(result, err)
 		}
-		if err := this.w.Close(); err != nil {
-			result = multierror.Append(result, err)
-		}
-		this.dec = nil
-		this.r = nil
-		this.w = nil
-		return result
 	}
 
-	// Return sucess
-	return nil
+	// Return any errors
+	return result
 }

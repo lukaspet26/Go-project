@@ -1,7 +1,8 @@
-package sqimport
+package importer
 
 import (
 	// Modules
+
 	sqlite3 "github.com/djthorpe/go-sqlite/sys/sqlite3"
 	multierror "github.com/hashicorp/go-multierror"
 
@@ -16,83 +17,85 @@ import (
 type SQLWriter struct {
 	*sqlite3.ConnEx
 	overwrite bool
-	insert    *sqlite3.StatementEx
+	n         int
 }
-
-type WriterFunc func(row []interface{}) error
 
 ///////////////////////////////////////////////////////////////////////////////
 // LIFECYCLE
 
 func NewSQLWriter(c SQImportConfig, db *sqlite3.ConnEx) (*SQLWriter, error) {
-	return &SQLWriter{db, c.Overwrite, nil}, nil
+	return &SQLWriter{db, c.Overwrite, 0}, nil
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // PUBLIC METHODS
 
 // Begin a transaction, passing a writing function back to the caller
-func (this *SQLWriter) Begin(name, schema string, cols []string) (WriterFunc, error) {
+func (w *SQLWriter) Begin(name, schema string, cols []string) (SQImportWriterFunc, error) {
 	// Start transaction
-	if err := this.ConnEx.Begin(sqlite3.SQLITE_TXN_DEFAULT); err != nil {
+	if err := w.ConnEx.Begin(sqlite3.SQLITE_TXN_DEFAULT); err != nil {
 		return nil, err
 	}
 
+	// Set schema
+	if schema == "" {
+		schema = sqlite3.DefaultSchema
+	}
+
 	// Drop table if overwrite is enabled
-	if this.overwrite {
-		if err := this.dropTable(name, schema); err != nil {
-			this.ConnEx.Rollback()
+	if w.overwrite {
+		if err := w.dropTable(name, schema); err != nil {
+			w.ConnEx.Rollback()
 			return nil, err
 		}
 	}
 
 	// Create table if it doesn't exist
-	if err := this.createTable(name, schema, cols); err != nil {
-		this.ConnEx.Rollback()
+	if err := w.createTable(name, schema, cols); err != nil {
+		w.ConnEx.Rollback()
 		return nil, err
 	}
 
-	// TODO: Add columns onto the table if necessary
-
-	// Make prepared statement for insert
-	if st, err := this.ConnEx.Prepare(N(name).WithSchema(schema).Insert(cols...).Query()); err != nil {
-		this.ConnEx.Rollback()
+	// Add columns
+	if err := w.addColumns(name, schema, cols); err != nil {
+		w.ConnEx.Rollback()
 		return nil, err
-	} else {
-		this.insert = st
 	}
 
-	// Pass back the function to write a row of data
-	return this.writer, nil
+	// Make function to write rows
+	fn := func(row []interface{}) error {
+		changes, err := w.writer(name, schema, cols, row)
+		w.n += changes
+		return err
+	}
+
+	// Reset counter
+	w.n = 0
+
+	// Return function
+	return fn, nil
 }
 
-func (this *SQLWriter) End(success bool) error {
-	var result error
-
-	// Close prepared statement
-	if err := this.insert.Close(); err != nil {
-		result = multierror.Append(result, err)
-	}
-
-	// Return success or failure
+func (w *SQLWriter) End(success bool) error {
 	if success {
-		result = multierror.Append(result, this.ConnEx.Commit())
+		return w.ConnEx.Commit()
 	} else {
-		result = multierror.Append(result, this.ConnEx.Rollback())
+		return w.ConnEx.Rollback()
 	}
+}
 
-	// Return any errors
-	return result
+func (w *SQLWriter) Count() int {
+	return w.n
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // PRIVATE METHODS
 
-func (this *SQLWriter) writer(row []interface{}) error {
-	if _, err := this.insert.Exec(0, row...); err != nil {
-		return err
+func (w *SQLWriter) writer(name, schema string, cols []string, values []interface{}) (int, error) {
+	if err := w.ConnEx.ExecEx(N(name).WithSchema(schema).Insert(cols...).Query(), nil, values...); err != nil {
+		return int(w.ConnEx.LastInsertId()), err
 	} else {
-		return nil
+		return int(w.ConnEx.Changes()), nil
 	}
 }
 
@@ -114,12 +117,11 @@ func (this *SQLWriter) createTable(name, schema string, cols []string) error {
 	}
 }
 
-func (this *SQLWriter) addColumns(name, schema string, cols []SQColumn) error {
+func (this *SQLWriter) addColumns(name, schema string, cols []string) error {
 	var result error
-	if err := this.Exec(Q("PRAGMA table_info(", N(name).WithSchema(schema), ")").Query(), func(row, col []string) bool {
-		if columnExists(cols, row[1]) == false {
+	if err := this.Exec(Q("PRAGMA ", N(schema), ".table_info(", N(name), ")").Query(), func(row, col []string) bool {
+		if !columnExists(cols, row[1]) {
 			if err := this.Exec(N(name).WithSchema(schema).AlterTable().AddColumn(C(row[1])).Query(), nil); err != nil {
-				// Abort on error
 				result = multierror.Append(result, err)
 				return true
 			}
@@ -141,9 +143,9 @@ func sqlToCols(colnames []string) []SQColumn {
 	return result
 }
 
-func columnExists(v []SQColumn, name string) bool {
+func columnExists(v []string, name string) bool {
 	for _, col := range v {
-		if col.Name() == name {
+		if col == name {
 			return true
 		}
 	}
