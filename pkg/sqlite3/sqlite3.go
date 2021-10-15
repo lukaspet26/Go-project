@@ -2,16 +2,21 @@ package sqlite3
 
 import (
 	// Modules
-	"github.com/djthorpe/go-sqlite/sys/sqlite3"
+	"github.com/mutablelogic/go-sqlite/sys/sqlite3"
+
+	// Namespace imports
+	. "github.com/mutablelogic/go-sqlite"
 )
 
 ////////////////////////////////////////////////////////////////////////////////
 // GLOBALS
 
 const (
-	defaultSchema = sqlite3.DefaultSchema
-	tempSchema    = "temp"
+	// DefaultFlags are the default flags for a new database connection
+	DefaultFlags  = SQFlag(sqlite3.SQLITE_OPEN_CREATE | sqlite3.SQLITE_OPEN_READWRITE)
+	DefaultSchema = sqlite3.DefaultSchema
 	defaultMemory = sqlite3.DefaultMemory
+	tempSchema    = "temp"
 )
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -20,8 +25,4 @@ const (
 func Version() string {
 	str, _, _ := sqlite3.Version()
 	return str
-}
-
-func IsComplete(v string) bool {
-	return sqlite3.IsComplete(v)
 }

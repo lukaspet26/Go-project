@@ -3,10 +3,11 @@ package sqlite3
 import (
 
 	// Namespace imports
+
 	"strconv"
 
-	. "github.com/djthorpe/go-sqlite"
-	. "github.com/djthorpe/go-sqlite/pkg/lang"
+	. "github.com/mutablelogic/go-sqlite"
+	. "github.com/mutablelogic/go-sqlite/pkg/lang"
 )
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -27,7 +28,7 @@ func (c *Conn) Schemas() []string {
 // Filename returns the filename for a schema
 func (c *Conn) Filename(schema string) string {
 	if schema == "" {
-		return c.Filename(defaultSchema)
+		return c.Filename(DefaultSchema)
 	}
 	return c.ConnEx.Filename(schema)
 }
@@ -35,7 +36,7 @@ func (c *Conn) Filename(schema string) string {
 // Tables returns a list of table names in a schema
 func (c *Conn) Tables(schema string) []string {
 	if schema == "" {
-		return c.Tables(defaultSchema)
+		return c.Tables(DefaultSchema)
 	}
 	return c.objectsInSchema(schema, "table")
 }
@@ -45,7 +46,7 @@ func (c *Conn) Count(schema, table string) int64 {
 	if table == "" {
 		return -1
 	} else if schema == "" {
-		return c.Count(defaultSchema, table)
+		return c.Count(DefaultSchema, table)
 	}
 	result := int64(-1)
 	if err := c.Exec(Q("SELECT COUNT(*) FROM ", N(table).WithSchema(schema)), func(row, k []string) bool {
@@ -62,7 +63,7 @@ func (c *Conn) Count(schema, table string) int64 {
 // ColumnsForTable returns the columns in a table
 func (c *Conn) ColumnsForTable(schema, table string) []SQColumn {
 	if schema == "" {
-		return c.ColumnsForTable(defaultSchema, table)
+		return c.ColumnsForTable(DefaultSchema, table)
 	}
 	result := []SQColumn{}
 	if err := c.Exec(Q("PRAGMA ", N(schema), ".table_info(", N(table), ")"), func(row, k []string) bool {
@@ -86,7 +87,7 @@ func (c *Conn) ColumnsForTable(schema, table string) []SQColumn {
 // ColumnsForIndex returns the indexes associated with a table
 func (c *Conn) ColumnsForIndex(schema, index string) []string {
 	if schema == "" {
-		return c.ColumnsForIndex(defaultSchema, index)
+		return c.ColumnsForIndex(DefaultSchema, index)
 	}
 
 	result := []string{}
@@ -104,10 +105,10 @@ func (c *Conn) IndexesForTable(schema, table string) []SQIndexView {
 	if table == "" {
 		return nil
 	} else if schema == "" {
-		return c.IndexesForTable(defaultSchema, table)
+		return c.IndexesForTable(DefaultSchema, table)
 	}
 	result := []SQIndexView{}
-	if err := c.ExecEx(Q("PRAGMA ", N(schema), ".index_list(", N(table), ")").Query(), func(row, _ []string) bool {
+	if err := c.ExecEx(Q("PRAGMA ", N(schema), ".index_list(", N(table), ")").Query(), func(row, col []string) bool {
 		// columns are is "seq" "name" "unique" "origin" "partial"
 
 		// Get index column names, abort if error
@@ -124,7 +125,8 @@ func (c *Conn) IndexesForTable(schema, table string) []SQIndexView {
 		if stringToBool(row[2]) || row[3] == "u" || row[3] == "pk" {
 			index = index.WithUnique()
 		}
-		if row[3] != "c" {
+		if row[3] == "pk" {
+			// If primary key set index as "auto"
 			index = index.WithAuto()
 		}
 		result = append(result, index)
@@ -138,7 +140,7 @@ func (c *Conn) IndexesForTable(schema, table string) []SQIndexView {
 // Views returns a list of view names in a schema
 func (c *Conn) Views(schema string) []string {
 	if schema == "" {
-		return c.Views(defaultSchema)
+		return c.Views(DefaultSchema)
 	}
 	return c.objectsInSchema(schema, "view")
 }

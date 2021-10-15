@@ -12,14 +12,14 @@ import (
 	"unsafe"
 
 	// Modules
-	sqlite3 "github.com/djthorpe/go-sqlite/sys/sqlite3"
 	multierror "github.com/hashicorp/go-multierror"
+	sqlite3 "github.com/mutablelogic/go-sqlite/sys/sqlite3"
 
 	// Namespace Imports
 	. "github.com/djthorpe/go-errors"
-	. "github.com/djthorpe/go-sqlite"
-	. "github.com/djthorpe/go-sqlite/pkg/lang"
-	. "github.com/djthorpe/go-sqlite/pkg/quote"
+	. "github.com/mutablelogic/go-sqlite"
+	. "github.com/mutablelogic/go-sqlite/pkg/lang"
+	. "github.com/mutablelogic/go-sqlite/pkg/quote"
 )
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -32,7 +32,7 @@ type PoolConfig struct {
 	Trace   bool              `yaml:"trace"`     // Profiling for statements
 	Create  bool              `yaml:"create"`    // When false, do not allow creation of new file-based databases
 	Auth    SQAuth            // Authentication and Authorization interface
-	Flags   sqlite3.OpenFlags // Flags for opening connections
+	Flags   SQFlag            // Flags for opening connections
 }
 
 // Pool is a connection pool object
@@ -56,8 +56,8 @@ var (
 		Max:     5,
 		Trace:   false,
 		Create:  true,
-		Schemas: map[string]string{defaultSchema: defaultMemory},
-		Flags:   sqlite3.SQLITE_OPEN_CREATE | sqlite3.SQLITE_OPEN_SHAREDCACHE | sqlite3.SQLITE_OPEN_CONNCACHE,
+		Schemas: map[string]string{DefaultSchema: defaultMemory},
+		Flags:   SQFlag(sqlite3.SQLITE_OPEN_CREATE) | SQFlag(sqlite3.SQLITE_OPEN_SHAREDCACHE) | SQLITE_OPEN_CACHE,
 	}
 )
 
@@ -70,7 +70,7 @@ var (
 func NewPool(path string, errs chan<- error) (*Pool, error) {
 	cfg := defaultPoolConfig
 	if path != "" {
-		cfg.Schemas = map[string]string{defaultSchema: path}
+		cfg.Schemas = map[string]string{DefaultSchema: path}
 	}
 	return OpenPool(cfg, errs)
 }
@@ -94,9 +94,9 @@ func OpenPool(config PoolConfig, errs chan<- error) (*Pool, error) {
 
 	// Update create flag
 	if config.Create {
-		config.Flags |= sqlite3.SQLITE_OPEN_CREATE
+		config.Flags |= SQFlag(sqlite3.SQLITE_OPEN_CREATE)
 	} else {
-		config.Flags &^= sqlite3.SQLITE_OPEN_CREATE
+		config.Flags &^= SQFlag(sqlite3.SQLITE_OPEN_CREATE)
 	}
 
 	// Set up pool
@@ -226,15 +226,15 @@ func (p *Pool) Put(conn SQConnection) {
 // complete operation
 func (p *Pool) new() (*Conn, error) {
 	// Open connection to main schema, which is required
-	defaultPath := p.pathForSchema(defaultSchema)
+	defaultPath := p.pathForSchema(DefaultSchema)
 	if defaultPath == "" {
-		return nil, ErrNotFound.Withf("No default schema %q found", defaultSchema)
+		return nil, ErrNotFound.Withf("No default schema %q found", DefaultSchema)
 	}
 
 	// Always allow memory databases to be created and read/write
 	flags := p.Flags
 	if defaultPath == defaultMemory {
-		flags |= (sqlite3.SQLITE_OPEN_CREATE | sqlite3.SQLITE_OPEN_READWRITE)
+		flags |= SQFlag(sqlite3.SQLITE_OPEN_CREATE | sqlite3.SQLITE_OPEN_READWRITE)
 	}
 
 	// Perform the open
@@ -245,7 +245,7 @@ func (p *Pool) new() (*Conn, error) {
 
 	// Set trace
 	if p.PoolConfig.Trace {
-		conn.SetTraceHook(func(_ sqlite3.TraceType, a, b unsafe.Pointer) int {
+		conn.ConnEx.SetTraceHook(func(_ sqlite3.TraceType, a, b unsafe.Pointer) int {
 			p.trace(conn, (*sqlite3.Statement)(a), *(*int64)(b))
 			return 0
 		}, sqlite3.SQLITE_TRACE_PROFILE)
@@ -256,7 +256,7 @@ func (p *Pool) new() (*Conn, error) {
 	for schema := range p.Schemas {
 		schema = strings.TrimSpace(schema)
 		path := p.pathForSchema(schema)
-		if schema == defaultSchema {
+		if schema == DefaultSchema {
 			continue
 		}
 		if path == "" {
@@ -313,7 +313,7 @@ func (p *Pool) put(conn *Conn) {
 // or an empty string if the schema name is not valid
 func (p *Pool) pathForSchema(schema string) string {
 	if schema == "" {
-		return p.pathForSchema(defaultSchema)
+		return p.pathForSchema(DefaultSchema)
 	} else if !reSchemaName.MatchString(schema) {
 		return ""
 	} else if path, exists := p.Schemas[schema]; !exists {
@@ -357,11 +357,11 @@ func (p *Pool) attach(conn *Conn, schema, path string) error {
 
 // Create a database before attaching
 func (p *Pool) attachCreate(path string) error {
-	if p.PoolConfig.Flags&sqlite3.SQLITE_OPEN_CREATE == 0 {
+	if p.PoolConfig.Flags&SQFlag(sqlite3.SQLITE_OPEN_CREATE) == 0 {
 		return ErrBadParameter.Withf("Database does not exist: %q", path)
 	}
 	// Open then close database before attaching
-	if conn, err := sqlite3.OpenPath(path, p.PoolConfig.Flags, ""); err != nil {
+	if conn, err := sqlite3.OpenPath(path, sqlite3.OpenFlags(p.PoolConfig.Flags), ""); err != nil {
 		return err
 	} else if err := conn.Close(); err != nil {
 		return err

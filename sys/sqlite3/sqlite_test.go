@@ -1,13 +1,12 @@
 package sqlite3_test
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/djthorpe/go-sqlite/sys/sqlite3"
+	"github.com/mutablelogic/go-sqlite/sys/sqlite3"
 )
 
 func Test_SQLite_001(t *testing.T) {
@@ -111,7 +110,7 @@ func Test_SQLite_006(t *testing.T) {
 		if st == sqlite3.SQLITE_DONE {
 			break
 		}
-		fmt.Println(st)
+		t.Log(st)
 	}
 
 	statement, _, err := db.Prepare("SELECT * FROM test WHERE a=:a AND b=:b")
@@ -190,7 +189,7 @@ func Test_SQLite_009(t *testing.T) {
 		if st == sqlite3.SQLITE_DONE {
 			break
 		}
-		fmt.Println(st)
+		t.Log(st)
 	}
 
 	statement, _, err := db.Prepare("SELECT * FROM test WHERE a=:a AND b=:b")

@@ -4,18 +4,17 @@ import (
 	// Modules
 	"context"
 
-	sqlite3 "github.com/djthorpe/go-sqlite/sys/sqlite3"
+	sqlite3 "github.com/mutablelogic/go-sqlite/sys/sqlite3"
 
 	// Namespace Imports
 	. "github.com/djthorpe/go-errors"
-	. "github.com/djthorpe/go-sqlite"
+	. "github.com/mutablelogic/go-sqlite"
 )
 
 ////////////////////////////////////////////////////////////////////////////////
 // PRIVATE FUNCTIONS
 
 func (p *Pool) auth(ctx context.Context, action sqlite3.SQAction, args [4]string) error {
-	//fmt.Printf("auth %v %q\n", action, args)
 	switch action {
 	case sqlite3.SQLITE_CREATE_INDEX:
 		return p.Auth.CanExec(ctx, SQLITE_AUTH_INDEX|SQLITE_AUTH_CREATE, args[2], args[1], args[0])

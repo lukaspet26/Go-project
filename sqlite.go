@@ -15,8 +15,8 @@ const (
 // TYPES
 
 type (
-	SQAuthFlag uint
-	SQTxnFlag  uint
+	SQAuthFlag uint32
+	SQFlag     uint32
 )
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -49,11 +49,17 @@ type SQPool interface {
 
 // SQConnection is an sqlite connection to one or more databases
 type SQConnection interface {
-	//SQTransaction
+	SQTransaction
 
 	// Execute a transaction with context, rollback on any errors
 	// or cancelled context
-	Do(context.Context, SQTxnFlag, func(SQTransaction) error) error
+	Do(context.Context, SQFlag, func(SQTransaction) error) error
+}
+
+// SQTransaction is an sqlite transaction
+type SQTransaction interface {
+	// Query and return a set of results
+	Query(SQStatement, ...interface{}) (SQResults, error)
 
 	// Schemas returns a list of all the schemas in the database
 	Schemas() []string
@@ -84,12 +90,9 @@ type SQConnection interface {
 	// provided, then only modules with those name prefixes
 	// matched
 	Modules(...string) []string
-}
 
-// SQTransaction is an sqlite transaction
-type SQTransaction interface {
-	// Query and return a set of results
-	Query(SQStatement, ...interface{}) (SQResults, error)
+	// Return flags for transaction or'd with connection flags
+	Flags() SQFlag
 }
 
 // SQResults increments over returned rows from a query
@@ -138,11 +141,14 @@ type SQAuth interface {
 // GLOBALS
 
 const (
-	SQLITE_TXN_DEFAULT SQTxnFlag = (1 << iota)
-	SQLITE_TXN_IMMEDIATE
-	SQLITE_TXN_EXCLUSIVE
-	SQLITE_TXN_SNAPSHOT
-	SQLITE_TXN_NO_FOREIGNKEY_CONSTRAINTS
+	SQLITE_NONE                          SQFlag = 0
+	SQLITE_TXN_DEFAULT                   SQFlag = (1 << 16) // Default transaction flag
+	SQLITE_TXN_IMMEDIATE                 SQFlag = (1 << 17) // Immediate transaction
+	SQLITE_TXN_EXCLUSIVE                 SQFlag = (1 << 18) // Exclusive transaction
+	SQLITE_TXN_NO_FOREIGNKEY_CONSTRAINTS SQFlag = (1 << 19) // Drop foreign key constraints on this transaction
+	SQLITE_OPEN_CACHE                    SQFlag = (1 << 20) // Cache prepared statements
+	SQLITE_OPEN_OVERWRITE                SQFlag = (1 << 21) // Overwrite objects
+	SQLITE_OPEN_FOREIGNKEYS              SQFlag = (1 << 22) // Enable foreign key support
 )
 
 const (
@@ -245,6 +251,6 @@ func (v SQAuthFlag) Is(q SQAuthFlag) bool {
 }
 
 // Is any of the flags in q
-func (v SQTxnFlag) Is(q SQTxnFlag) bool {
+func (v SQFlag) Is(q SQFlag) bool {
 	return v&q != 0
 }

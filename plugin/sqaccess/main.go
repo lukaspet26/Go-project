@@ -5,20 +5,38 @@ import (
 	"fmt"
 
 	// Packages
-	sqlite3 "github.com/mutablelogic/go-sqlite/pkg/sqlite3"
+	"github.com/mutablelogic/go-sqlite/pkg/sqlite3"
+	"github.com/mutablelogic/go-sqlite/pkg/sqobj"
 
 	// Namespace imports
 	. "github.com/mutablelogic/go-server"
 	. "github.com/mutablelogic/go-sqlite"
+	. "github.com/mutablelogic/go-sqlite/pkg/lang"
 )
 
 ///////////////////////////////////////////////////////////////////////////////
 // TYPES
 
-type plugin struct {
-	SQPool
-	errs chan error
+type Config struct {
+	Database string `yaml:"database"`
 }
+
+type User struct {
+	Username string `sqlite:"user,primary"`
+	Hash     string `sqlite:"hash"`
+}
+
+type plugin struct {
+	Config
+	SQPool
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// GLOBALS
+
+var (
+	clUser = sqobj.MustRegisterClass(N("User"), User{})
+)
 
 ///////////////////////////////////////////////////////////////////////////////
 // LIFECYCLE
@@ -28,21 +46,36 @@ func New(ctx context.Context, provider Provider) Plugin {
 	p := new(plugin)
 
 	// Get configuration
-	cfg := sqlite3.PoolConfig{}
+	cfg := Config{}
 	if err := provider.GetConfig(ctx, &cfg); err != nil {
 		provider.Print(ctx, err)
 		return nil
+	} else {
+		p.Config = cfg
 	}
 
-	// Create a channel for errors
-	p.errs = make(chan error)
-
-	// Create a pool
-	if pool, err := sqlite3.OpenPool(cfg, p.errs); err != nil {
-		provider.Print(ctx, err)
+	// Get sqlite3
+	if pool := provider.GetPlugin(ctx, "sqlite3").(SQPool); pool == nil {
+		provider.Print(ctx, "no sqlite3 plugin")
 		return nil
 	} else {
 		p.SQPool = pool
+	}
+
+	// Get a connection
+	conn := p.Get(ctx)
+	if conn == nil {
+		provider.Print(ctx, "no sqlite3 connection")
+		return nil
+	}
+	defer p.Put(conn)
+
+	// Create the database
+	if sqobj, err := sqobj.With(conn.(*sqlite3.Conn), p.Database, clUser); err != nil {
+		provider.Print(ctx, err)
+		return nil
+	} else {
+		fmt.Println(sqobj)
 	}
 
 	// Return success
@@ -53,21 +86,21 @@ func New(ctx context.Context, provider Provider) Plugin {
 // STRINGIFY
 
 func (p *plugin) String() string {
-	return fmt.Sprint(p.SQPool)
+	str := "<sqaccess"
+	if p.Config.Database != "" {
+		str += fmt.Sprintf(" database=%q", p.Config.Database)
+	}
+	return str + ">"
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // PUBLIC METHODS
 
 func Name() string {
-	return "sqlite3"
+	return "sqaccess"
 }
 
 func (p *plugin) Run(ctx context.Context, provider Provider) error {
-	// Add handlers
-	if err := p.AddHandlers(ctx, provider); err != nil {
-		return err
-	}
 
 	// Run until cancelled - print any errors from the connection pool
 FOR_LOOP:
@@ -75,20 +108,8 @@ FOR_LOOP:
 		select {
 		case <-ctx.Done():
 			break FOR_LOOP
-		case err := <-p.errs:
-			if err != nil {
-				provider.Print(ctx, err)
-			}
 		}
 	}
-
-	// Close the pool
-	if err := p.SQPool.Close(); err != nil {
-		provider.Print(ctx, err)
-	}
-
-	// Close error channel
-	close(p.errs)
 
 	// Return success
 	return nil

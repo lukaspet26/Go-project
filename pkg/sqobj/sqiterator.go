@@ -1,63 +1,72 @@
 package sqobj
 
 import (
+	"errors"
+	"io"
 	"reflect"
 
 	// Modules
 
 	// Import Namespaces
-	. "github.com/djthorpe/go-sqlite"
+	. "github.com/mutablelogic/go-sqlite"
 )
 
 ///////////////////////////////////////////////////////////////////////////////
 // TYPES
 
-type sqiterator struct {
-	class *sqclass
+type Iterator struct {
+	class *Class
 	proto reflect.Value
-	rs    SQRows
+	t     []reflect.Type
+	rs    SQResults
 	rowid int64
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // LIFECYCLE
 
-func NewIterator(class *sqclass, rs SQRows) *sqiterator {
-	this := new(sqiterator)
+func iterator(class *Class, rs SQResults) *Iterator {
+	this := new(Iterator)
+
+	// Set the class, prototype object and results
 	this.class = class
 	this.proto = class.Proto()
 	this.rs = rs
+
+	// Set the casting types - first is the rowid, then the rest are the values
+	this.t = append(this.t, reflect.TypeOf(int64(0)))
+	for _, col := range this.class.col {
+		this.t = append(this.t, col.Type)
+	}
+
 	return this
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // PUBLIC METHODS
 
-func (this *sqiterator) Next() interface{} {
-	if this.rs == nil {
+func (i *Iterator) Next() interface{} {
+	if i.rs == nil {
 		return nil
 	}
-	params := this.rs.Next()
-	if params == nil {
-		this.rs = nil
-		this.rowid = 0
+	v, err := i.rs.Next(i.t...)
+	if err != nil {
+		i.rs = nil
+		i.rowid = 0
+		if !errors.Is(err, io.EOF) {
+			panic(err)
+		}
 		return nil
 	}
-	if err := this.class.unboundValues(this.proto, params[1:]); err != nil {
-		panic(err)
-	}
-	this.rowid = params[0].(int64)
-	return this.proto
+
+	// Set rowid and proto values
+	i.rowid = v[0].(int64)
+	i.class.unboundValues(i.proto, v[1:])
+
+	// Return the prototype object
+	return i.proto.Interface()
 }
 
-func (this *sqiterator) RowId() int64 {
-	return this.rowid
-}
-
-func (this *sqiterator) Close() error {
-	if this.rs == nil {
-		return nil
-	} else {
-		return this.rs.Close()
-	}
+func (i *Iterator) RowId() int64 {
+	return i.rowid
 }

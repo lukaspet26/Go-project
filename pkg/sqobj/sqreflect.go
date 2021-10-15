@@ -12,8 +12,9 @@ import (
 
 	// Import namespaces
 	. "github.com/djthorpe/go-errors"
-	. "github.com/djthorpe/go-sqlite"
-	. "github.com/djthorpe/go-sqlite/pkg/lang"
+	. "github.com/mutablelogic/go-sqlite"
+	. "github.com/mutablelogic/go-sqlite/pkg/lang"
+	. "github.com/mutablelogic/go-sqlite/pkg/quote"
 )
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -373,8 +374,8 @@ func newColumnFor(f *marshaler.Field) *sqcolumn {
 	// Cycle through tags
 	for _, tag := range f.Tags {
 		tag = strings.TrimSpace(strings.ToUpper(tag))
-		// If tag is BOOL, INTEGER, FLOAT, TEXT, BLOB, TIMESTAMP, then set column type
-		if IsSupportedType(tag) {
+		// If tag is BOOL, INTEGER, FLOAT, TEXT, BLOB then set column type
+		if IsType(tag) {
 			this.Col = this.Col.WithType(strings.ToUpper(tag))
 			continue
 		}

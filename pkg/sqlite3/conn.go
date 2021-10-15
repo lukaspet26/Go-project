@@ -8,12 +8,12 @@ import (
 	"sync"
 
 	// Modules
-	sqlite3 "github.com/djthorpe/go-sqlite/sys/sqlite3"
 	multierror "github.com/hashicorp/go-multierror"
+	sqlite3 "github.com/mutablelogic/go-sqlite/sys/sqlite3"
 
 	// Namespace Imports
 	. "github.com/djthorpe/go-errors"
-	. "github.com/djthorpe/go-sqlite"
+	. "github.com/mutablelogic/go-sqlite"
 )
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -25,11 +25,13 @@ type Conn struct {
 	ConnCache
 
 	c   chan struct{}
+	f   SQFlag
 	ctx context.Context
 }
 
 type Txn struct {
 	*Conn
+	f SQFlag
 }
 
 type ExecFunc sqlite3.ExecFunc
@@ -38,11 +40,24 @@ type TxnFunc func(SQTransaction) error
 ////////////////////////////////////////////////////////////////////////////////
 // LIFECYCLE
 
-func OpenPath(path string, flags sqlite3.OpenFlags) (*Conn, error) {
+// New creates an in-memory database. Pass any flags to set open options. If
+// no flags are provided, the default is to create a read/write database.
+func New(flags ...SQFlag) (*Conn, error) {
+	f := SQFlag(0)
+	if len(flags) == 0 {
+		f |= SQFlag(sqlite3.DefaultFlags)
+	}
+	for _, flag := range flags {
+		f |= flag
+	}
+	return OpenPath(defaultMemory, f)
+}
+
+func OpenPath(path string, flags SQFlag) (*Conn, error) {
 	conn := new(Conn)
 
 	// If no create flag then check to make sure database exists
-	if path != defaultMemory && flags&sqlite3.SQLITE_OPEN_CREATE == 0 {
+	if path != defaultMemory && flags&SQFlag(sqlite3.SQLITE_OPEN_MEMORY) == 0 && SQFlag(sqlite3.SQLITE_OPEN_CREATE) == 0 {
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			return nil, ErrNotFound.Withf("%q", path)
 		} else if err != nil {
@@ -51,17 +66,26 @@ func OpenPath(path string, flags sqlite3.OpenFlags) (*Conn, error) {
 	}
 
 	// Open database with flags
-	if c, err := sqlite3.OpenPathEx(path, flags, ""); err != nil {
+	if c, err := sqlite3.OpenPathEx(path, sqlite3.OpenFlags(flags), ""); err != nil {
 		return nil, err
 	} else {
 		conn.ConnEx = c
+		conn.f = flags
 	}
 
 	// Set cache to default size
-	if flags&sqlite3.SQLITE_OPEN_CONNCACHE != 0 {
+	if flags&SQLITE_OPEN_CACHE != 0 {
 		conn.SetCap(defaultCapacity)
 	} else {
 		conn.SetCap(0)
+	}
+
+	// Set foreign keys
+	if flags&SQLITE_OPEN_FOREIGNKEYS != 0 {
+		if err := conn.SetForeignKeyConstraints(true); err != nil {
+			conn.ConnEx.Close()
+			return nil, err
+		}
 	}
 
 	// Finalizer to panic when connection not closed before garbage collection
@@ -96,8 +120,13 @@ func (conn *Conn) Exec(st SQStatement, fn ExecFunc) error {
 	return conn.ConnEx.Exec(st.Query(), sqlite3.ExecFunc(fn))
 }
 
+// Execute SQL statement outside of transaction - currently not implemented
+func (conn *Conn) Query(st SQStatement, v ...interface{}) (SQResults, error) {
+	return nil, ErrNotImplemented.With("Query")
+}
+
 // Perform a transaction, rollback if error is returned
-func (conn *Conn) Do(ctx context.Context, flag SQTxnFlag, fn func(SQTransaction) error) error {
+func (conn *Conn) Do(ctx context.Context, flag SQFlag, fn func(SQTransaction) error) error {
 	conn.Mutex.Lock()
 	defer conn.Mutex.Unlock()
 
@@ -117,7 +146,7 @@ func (conn *Conn) Do(ctx context.Context, flag SQTxnFlag, fn func(SQTransaction)
 		}
 	}
 
-	// Flags
+	// Transaction flags
 	v := sqlite3.SQLITE_TXN_DEFAULT
 	if flag.Is(SQLITE_TXN_EXCLUSIVE) {
 		v = sqlite3.SQLITE_TXN_EXCLUSIVE
@@ -137,7 +166,7 @@ func (conn *Conn) Do(ctx context.Context, flag SQTxnFlag, fn func(SQTransaction)
 		conn.SetProgressHandler(100, func() bool {
 			return ctx != nil && ctx.Err() != nil
 		})
-		if err := fn(&Txn{conn}); err != nil {
+		if err := fn(&Txn{conn, flag}); err != nil {
 			result = multierror.Append(result, err)
 		}
 		conn.SetProgressHandler(0, nil)
@@ -173,7 +202,7 @@ func (txn *Txn) Query(st SQStatement, v ...interface{}) (SQResults, error) {
 	}
 
 	// Get a results object
-	r, err := txn.ConnCache.Prepare(txn.Conn.ConnEx, st.Query())
+	r, err := txn.Conn.ConnCache.Prepare(txn.Conn.ConnEx, st.Query())
 	if err != nil {
 		return nil, err
 	}
@@ -184,4 +213,14 @@ func (txn *Txn) Query(st SQStatement, v ...interface{}) (SQResults, error) {
 	} else {
 		return r, nil
 	}
+}
+
+// Flags returns the Open Flags
+func (c *Conn) Flags() SQFlag {
+	return c.f
+}
+
+// Flags returns the Open Flags or'd with Transaction Flags
+func (t *Txn) Flags() SQFlag {
+	return t.f | t.Conn.f
 }

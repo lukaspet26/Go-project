@@ -19,16 +19,16 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/djthorpe/go-sqlite.git"
+    "url": "git+https://github.com/mutablelogic/go-sqlite.git"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
   },
   "author": "David Thorpe",
   "bugs": {
-    "url": "https://github.com/djthorpe/go-sqlite/issues"
+    "url": "https://github.com/mutablelogic/go-sqlite/issues"
   },
-  "homepage": "https://github.com/djthorpe/go-sqlite#readme",
+  "homepage": "https://github.com/mutablelogic/go-sqlite#readme",
   "devDependencies": {
     "esbuild": "^0.12.14",
     "eslint": "^7.30.0",
@@ -40,6 +40,7 @@
     "dist/**/*.{js,map,woff,woff2,txt,ttf,css,html,jpg,jpeg,png,gif,svg}"
   ],
   "dependencies": {
-    "@djthorpe/js-framework": "^0.0.47"
+    "@djthorpe/js-framework": "^0.0.47",
+    "lit-html": "^1.4.1"
   }
 }
