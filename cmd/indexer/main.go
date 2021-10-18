@@ -2,102 +2,161 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
-	// Modules
-	indexer "github.com/djthorpe/go-sqlite/pkg/indexer"
-	sqlite "github.com/djthorpe/go-sqlite/pkg/sqlite"
+	// Packages
+	"github.com/mutablelogic/go-sqlite/pkg/indexer"
+	"github.com/mutablelogic/go-sqlite/pkg/sqlite3"
 
-	// Import namespaces
-	. "github.com/djthorpe/go-sqlite"
+	// Namespace imports
+	. "github.com/mutablelogic/go-sqlite"
+	. "github.com/mutablelogic/go-sqlite/pkg/lang"
 )
 
 var (
-	flagDatabase = flag.String("db", "", "Database file")
-	flagReset    = flag.Bool("reset", false, "Reset database schema")
-	flagReindex  = flag.Bool("reindex", true, "Reindex database")
-	flagExclude  = flag.String("exclude", "", "Path and file extension exclusions")
+	flagName     = flag.String("name", "index", "Index name")
+	flagInclude  = flag.String("include", "", "Paths, names and extensions to include")
+	flagExclude  = flag.String("exclude", "", "Paths, names and extensions to exclude")
+	flagWorkers  = flag.Uint("workers", 10, "Number of indexing workers")
+	flagDatabase = flag.String("db", ":memory:", "Path to sqlite database")
 )
 
 func main() {
-	flag.Parse()
-
-	path, err := GetPath()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(-1)
-	}
-
-	// Make database connection
-	conn, err := sqlite.Open(*flagDatabase, nil)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(-1)
-	}
-	defer conn.Close()
-
-	// Create index manager with main schema
-	flags := SQLITE_FLAG_NONE
-	if *flagReset {
-		flags |= SQLITE_FLAG_DELETEIFEXISTS
-	}
-	idx, err := indexer.NewManager(conn, "main", flags)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(-1)
-	}
-
-	// Handle signal
+	var wg sync.WaitGroup
 	ctx := HandleSignal()
 
-	// Run indexer in background
-	var wg sync.WaitGroup
+	// Parse flags
+	flag.Parse()
+	if flag.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "missing path argument")
+		os.Exit(-1)
+	}
+	path := flag.Arg(0)
+	if stat, err := os.Stat(path); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(-1)
+	} else if !stat.IsDir() {
+		fmt.Fprintln(os.Stderr, "Not a directory")
+		os.Exit(-1)
+	}
+
+	// Open indexer to path
+	indexer, err := indexer.NewIndexer(*flagName, path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(-1)
+	}
+
+	// Indexer inclusions
+	for _, include := range strings.FieldsFunc(*flagInclude, sep) {
+		if err := indexer.Include(include); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(-1)
+		}
+	}
+
+	// Indexer exclusions
+	for _, exclude := range strings.FieldsFunc(*flagExclude, sep) {
+		if err := indexer.Exclude(exclude); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(-1)
+		}
+	}
+
+	// Create database pool
+	errs := make(chan error)
+	pool, err := sqlite3.OpenPool(sqlite3.PoolConfig{
+		Max:    int32(*flagWorkers),
+		Create: true,
+		Schemas: map[string]string{
+			"main": *flagDatabase,
+		},
+	}, errs)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(-1)
+	}
+	defer pool.Close()
+
+	// Create schema
+	if err := CreateSchema(ctx, pool); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(-1)
+	}
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		fmt.Println("Running ", idx)
-		if err := idx.Run(ctx, RenderFile); err != nil {
-			fmt.Fprintln(os.Stderr, err)
+		for {
+			select {
+			case err := <-errs:
+				fmt.Fprintln(os.Stderr, err)
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 
-	// Make a new indexer
-	main, err := idx.NewIndexer("main", path)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(-1)
-	}
-
-	// Add exclude paths and extensions
-	for _, exclude := range strings.Fields(*flagExclude) {
-		if err := idx.Exclude(main, exclude); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(-1)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := indexer.Run(ctx, errs); err != nil {
+			errs <- err
 		}
-	}
+	}()
 
-	// Kick off a reindex, which is cancelled if ctx is cancelled
-	if *flagReindex {
-		time.Sleep(time.Second)
-		if err := idx.Reindex(main); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(-1)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-time.After(time.Second)
+		err := indexer.Walk(ctx, func(err error) {
+			if err != nil {
+				errs <- fmt.Errorf("reindexing completed with errors: %w", err)
+			} else {
+				errs <- fmt.Errorf("reindexing completed")
+			}
+		})
+		if err != nil {
+			errs <- fmt.Errorf("reindexing cannot start: %w", err)
 		}
+	}()
+
+	for i := uint(0); i < *flagWorkers; i++ {
+		wg.Add(1)
+		go func(i uint) {
+			defer wg.Done()
+			conn := pool.Get()
+			if conn == nil {
+				return
+			}
+			defer pool.Put(conn)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					if evt := indexer.Next(); evt != nil {
+						if err := Process(ctx, conn, evt); err != nil {
+							errs <- err
+						}
+					}
+				}
+			}
+		}(i)
 	}
 
-	// Wait for end of goroutines
+	// Wait for all goroutines to finish
 	wg.Wait()
-
-	// Shutdown
-	fmt.Println("Shutdown")
+	os.Exit(0)
 }
 
 func HandleSignal() context.Context {
@@ -112,17 +171,46 @@ func HandleSignal() context.Context {
 	return ctx
 }
 
-func GetPath() (string, error) {
-	if flag.NArg() > 1 {
-		return "", fmt.Errorf("usage: %s (<path>)", filepath.Base(flag.CommandLine.Name()))
-	}
-	if flag.NArg() == 1 {
-		return flag.Arg(0), nil
-	}
-	return os.Getwd()
+func sep(r rune) bool {
+	return r == ',' || unicode.IsSpace(r)
 }
 
-func RenderFile(ctx context.Context, evt indexer.IndexerEvent) error {
-	fmt.Println("TODO: ", evt)
-	return nil
+func CreateSchema(ctx context.Context, pool SQPool) error {
+	conn := pool.Get()
+	if conn == nil {
+		return errors.New("Unable to get a connection from pool")
+	}
+	defer pool.Put(conn)
+
+	// Create table
+	return conn.Do(ctx, 0, func(txn SQTransaction) error {
+		if _, err := txn.Query(Q(`CREATE TABLE IF NOT EXISTS files (
+			name       TEXT NOT NULL,
+			path       TEXT NOT NULL,
+			PRIMARY KEY (name, path)
+		)`)); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+func Process(ctx context.Context, conn SQConnection, evt *indexer.QueueEvent) error {
+	return conn.Do(ctx, 0, func(txn SQTransaction) error {
+		switch evt.Event {
+		case indexer.EventAdd:
+			if result, err := txn.Query(Q(`REPLACE INTO files (name, path) VALUES (?, ?)`), evt.Name, evt.Path); err != nil {
+				return err
+			} else if result.LastInsertId() > 0 {
+				//fmt.Println("ADDED:", evt)
+			}
+		case indexer.EventRemove:
+			if result, err := txn.Query(Q(`DELETE FROM files WHERE name=? AND path=?`), evt.Name, evt.Path); err != nil {
+				return err
+			} else if result.RowsAffected() == 1 {
+				fmt.Println("REMOVED:", evt)
+			}
+		}
+		return nil
+	})
 }

@@ -2,18 +2,16 @@ package indexer
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
-	"strings"
 	"sync"
-	"time"
 
-	// Modules
+	// Package imports
+	walkfs "github.com/mutablelogic/go-sqlite/pkg/walkfs"
 	notify "github.com/rjeczalik/notify"
 
 	// Import namepaces
@@ -24,47 +22,37 @@ import (
 // TYPES
 
 type Indexer struct {
-	sync.Mutex
-	name  string
-	path  string
-	state IndexerState
-	delta time.Duration
-
-	// Path and Extension exclusions
-	exext  map[string]bool
-	expath map[string]bool
+	*walkfs.WalkFS
+	*Queue
+	name string
+	path string
+	walk chan WalkFunc
 }
 
-type IndexerState uint
+// WalkFunc is called after a reindexing with any walk errors
+type WalkFunc func(err error)
 
 ///////////////////////////////////////////////////////////////////////////////
 // GLOBALS
+
+const (
+	defaultCapacity = 1024
+)
 
 var (
 	// Name for an index must be alphanumeric
 	reIndexName = regexp.MustCompile(`^([A-Za-z0-9\_\-]+)$`)
 )
 
-const (
-	IndexerStateIdle IndexerState = iota
-	IndexerStateReindexing
-	IndexerStateRunning
-	IndexerStateSuspended
-)
-
-const (
-	defaultDelta = time.Millisecond * 10
-	minDelta     = time.Millisecond * 1
-	maxDelta     = time.Second * 5
-)
-
 ///////////////////////////////////////////////////////////////////////////////
 // LIFECYCLE
 
+// Create a new indexer with an identifier, path to the root of the indexer
+// and a channel to receive any errors
 func NewIndexer(name, path string) (*Indexer, error) {
 	this := new(Indexer)
-	this.exext = make(map[string]bool)
-	this.expath = make(map[string]bool)
+	this.Queue = NewQueueWithCapacity(defaultCapacity)
+	this.WalkFS = walkfs.New(this.visit)
 
 	// Check path argument
 	if stat, err := os.Stat(path); err != nil {
@@ -78,118 +66,24 @@ func NewIndexer(name, path string) (*Indexer, error) {
 	} else {
 		this.name = name
 		this.path = abspath
-		this.state = IndexerStateIdle
-		this.delta = defaultDelta
 	}
+
+	// Channel to indicate we want to walk the index
+	this.walk = make(chan WalkFunc)
 
 	// Return success
 	return this, nil
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// STRINGIFY
-
-func (this *Indexer) String() string {
-	str := "<indexer"
-	if this.name != "" {
-		str += fmt.Sprintf(" name=%q", this.name)
-	}
-	if this.path != "" {
-		str += fmt.Sprintf(" path=%q", this.path)
-	}
-	str += fmt.Sprint(" state=", this.State())
-	return str + ">"
-}
-
-func (v IndexerState) String() string {
-	switch v {
-	case IndexerStateIdle:
-		return "IndexerStateIdle"
-	case IndexerStateReindexing:
-		return "IndexerStateReindexing"
-	case IndexerStateRunning:
-		return "IndexerStateRunning"
-	case IndexerStateSuspended:
-		return "IndexerStateSuspended"
-	default:
-		return "[?? Invalid IndexerState value]"
-	}
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// PROPERTIES
-
-// Return name of the index
-func (this *Indexer) Name() string {
-	return this.name
-}
-
-// Return the absolute path of the index
-func (this *Indexer) Path() string {
-	return this.path
-}
-
-// Return the indexer state
-func (this *Indexer) State() IndexerState {
-	this.Mutex.Lock()
-	defer this.Mutex.Unlock()
-	return this.state
-}
-
-// Get how often rendering is performed
-func (this *Indexer) Delta() time.Duration {
-	return this.delta
-}
-
-// Set how often rendering is performed
-func (this *Indexer) SetDelta(delta time.Duration) {
-	this.delta = maxDuration(minDelta, delta)
-}
-
-// Set the indexer state
-func (this *Indexer) setState(v IndexerState) {
-	this.Mutex.Lock()
-	defer this.Mutex.Unlock()
-	if v != this.state {
-		fmt.Println("SET STATE", v)
-		this.state = v
-	}
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// PRIVATE METHODS
-
-// Exclude adds a path or file extension exclusion to the indexer.
-// If it begins with a '.' then a file extension exlusion is added,
-// If it begins with a '/' then a path extension exclusion is added.
-// Path exclusions are case-sensitive, file extension exclusions are not.
-func (this *Indexer) exclude(v string) error {
-	if strings.HasPrefix(v, ".") && v != "." {
-		v = strings.ToUpper(v)
-		this.exext[v] = true
-	} else if strings.HasPrefix(v, pathSeparator) && v != pathSeparator {
-		v = pathSeparator + strings.Trim(v, pathSeparator)
-		this.expath[v] = true
-	} else {
-		return ErrBadParameter.Withf("invalid exclusion: %q", v)
-	}
-
-	// Return success
-	return nil
-}
-
 // run indexer
-func (this *Indexer) run(ctx context.Context, out chan<- IndexerEvent, render chan<- *Indexer) error {
-	in := make(chan notify.EventInfo, defaultCapacity)
-	if err := notify.Watch(filepath.Join(this.path, "..."), in, notify.Create, notify.Remove, notify.Write, notify.Rename); err != nil {
-		return err
-	} else {
-		this.setState(IndexerStateRunning)
-	}
+func (i *Indexer) Run(ctx context.Context, errs chan<- error) error {
+	var walking sync.Mutex
 
-	// Add delta timer
-	d := time.NewTimer(maxDuration(this.delta, maxDelta))
-	defer d.Stop()
+	in := make(chan notify.EventInfo, defaultCapacity)
+	if err := notify.Watch(filepath.Join(i.path, "..."), in, notify.Create, notify.Remove, notify.Write, notify.Rename); err != nil {
+		senderr(errs, err)
+		return err
+	}
 
 FOR_LOOP:
 	for {
@@ -198,148 +92,119 @@ FOR_LOOP:
 		case <-ctx.Done():
 			break FOR_LOOP
 		case evt := <-in:
-			// Ignore events if not in running state
-			if this.State() != IndexerStateRunning {
-				continue FOR_LOOP
+			if err := i.event(ctx, evt); err != nil {
+				senderr(errs, err)
 			}
-			// Get file information
-			info, _ := os.Stat(evt.Path())
-			if evttype := toEventType(evt.Event(), info); evttype != EVENT_TYPE_NONE {
-				if err := this.process(evttype, evt.Path(), info, out, false); err != nil {
-					select {
-					case out <- NewError(this.name, err):
-						// No-op
-					default:
-						// No-op
-					}
-				}
-			}
-		case <-d.C:
-			// Ignore events if not in running state
-			if this.State() != IndexerStateRunning {
-				continue FOR_LOOP
-			}
-			// Ignore when channel is full
-			select {
-			case render <- this:
-				// No-op
-			default:
-				// No-op
-			}
-			// Reset timer
-			d.Reset(this.delta)
+		case fn := <-i.walk:
+			walking.Lock()
+			go func() {
+				defer walking.Unlock()
+				// Start the walk and return any errors
+				fn(i.WalkFS.Walk(ctx, i.path))
+			}()
 		}
 	}
 
-	// Stop notify and close channel
+	// Stop notify and close channels
 	notify.Stop(in)
 	close(in)
-	this.setState(IndexerStateIdle)
+	close(i.walk)
 
 	// Return success
 	return nil
 }
 
-// run re-indexer
-func (this *Indexer) walk(ctx context.Context, out chan<- IndexerEvent) error {
-	// Check incoming parameters
-	if this.State() != IndexerStateReindexing {
-		return ErrOutOfOrder.With("Reindex: indexer is not running")
-	}
+///////////////////////////////////////////////////////////////////////////////
+// STRINGIFY
 
-	// Walk filesystem
-	err := filepath.WalkDir(this.path, func(path string, file fs.DirEntry, err error) error {
-		// Propogate errors if they are cancel/timeout
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return err
-		}
-		// Ignore hidden files and folders
-		if strings.HasPrefix(file.Name(), ".") {
-			if file.IsDir() {
-				return filepath.SkipDir
-			}
-			return err
-		}
-		// Process files which can be read
-		if info, err := file.Info(); err == nil {
-			this.process(EVENT_TYPE_ADDED|EVENT_TYPE_CHANGED, path, info, out, true)
-		}
-		// Return any context error
-		return ctx.Err()
-	})
-
-	// Return errors unless they are cancel/timeout
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return nil
-	} else {
-		return err
+func (i *Indexer) String() string {
+	str := "<indexer"
+	if i.name != "" {
+		str += fmt.Sprintf(" name=%q", i.name)
 	}
+	if i.path != "" {
+		str += fmt.Sprintf(" path=%q", i.path)
+	}
+	return str + ">"
 }
 
-// Return an indexer event or nil if no event should be sent
-func (this *Indexer) process(e EventType, path string, info fs.FileInfo, out chan<- IndexerEvent, block bool) error {
-	// Normalize the path
-	relpath, err := filepath.Rel(this.path, path)
+///////////////////////////////////////////////////////////////////////////////
+// PROPERTIES
+
+// Return name of the index
+func (i *Indexer) Name() string {
+	return i.name
+}
+
+// Return the absolute path of the index
+func (i *Indexer) Path() string {
+	return i.path
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// PUBLIC METHODS
+
+// Walk will initiate a walk of the index, and block until context is
+// cancelled or walk is started
+func (i *Indexer) Walk(ctx context.Context, fn WalkFunc) error {
+	if fn == nil {
+		return ErrBadParameter.With("WalkFunc")
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case i.walk <- fn:
+		break
+	}
+	// Return success
+	return nil
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// PRIVATE METHODS
+
+// event is used to process an event from the notify
+func (i *Indexer) event(ctx context.Context, evt notify.EventInfo) error {
+	relpath, err := filepath.Rel(i.path, evt.Path())
 	if err != nil {
 		return err
-	} else {
-		relpath = pathSeparator + relpath
 	}
-
-	// Deal with exclusions
-	if e&EVENT_TYPE_ADDED > 0 {
-		// Check for path exclusions
-		for exclusion := range this.expath {
-			if strings.HasPrefix(relpath, exclusion) {
-				return nil
-			}
+	switch evt.Event() {
+	case notify.Create, notify.Write:
+		info, err := os.Stat(evt.Path())
+		if err == nil && info.Mode().IsRegular() && i.ShouldVisit(relpath, info) {
+			i.Queue.Add(i.name, relpath)
 		}
-		// Check for extension exclusions
-		if info != nil && info.Mode().IsRegular() {
-			ext := strings.ToUpper(filepath.Ext(info.Name()))
-			if _, exists := this.exext[ext]; exists {
-				return nil
-			}
+	case notify.Remove, notify.Rename:
+		info, err := os.Stat(evt.Path())
+		if err == nil && info.Mode().IsRegular() && i.ShouldVisit(relpath, info) {
+			i.Queue.Add(i.name, relpath)
+		} else {
+			// Always attempt removal from index
+			i.Queue.Remove(i.name, relpath)
 		}
 	}
-
-	// Send event
-	if block {
-		out <- NewEvent(e, this.name, relpath, info)
-	} else {
-		select {
-		case out <- NewEvent(e, this.name, relpath, info):
-			// No-op
-		default:
-			return ErrChannelBlocked.With(this.name)
-		}
-	}
-
 	// Return success
 	return nil
 }
 
-// Translate notify types to internal types
-func toEventType(e notify.Event, info fs.FileInfo) EventType {
-	switch e {
-	case notify.Create:
-		if info != nil {
-			return EVENT_TYPE_ADDED
-		}
-	case notify.Remove:
-		return EVENT_TYPE_REMOVED
-	case notify.Rename:
-		if info != nil {
-			return EVENT_TYPE_ADDED | EVENT_TYPE_RENAMED
-		} else {
-			return EVENT_TYPE_REMOVED | EVENT_TYPE_RENAMED
-		}
-	case notify.Write:
-		if info != nil {
-			return EVENT_TYPE_ADDED | EVENT_TYPE_CHANGED
+// visit is used to index a file from the indexer
+func (i *Indexer) visit(ctx context.Context, abspath, relpath string, info fs.FileInfo) error {
+	if info.Mode().IsRegular() {
+		i.Queue.Add(i.name, relpath)
+	}
+	return nil
+}
+
+// senderr is used to send an error without blocking
+func senderr(ch chan<- error, err error) {
+	if ch != nil {
+		select {
+		case ch <- err:
+			return
+		default:
+			// Channel blocked, ignore error
+			return
 		}
 	}
-
-	// Ignore unhandled cases
-	return EVENT_TYPE_NONE
 }

@@ -20,9 +20,6 @@ import (
 	. "github.com/mutablelogic/go-server"
 	. "github.com/mutablelogic/go-sqlite"
 	. "github.com/mutablelogic/go-sqlite/pkg/lang"
-
-	// Some sort of hack
-	_ "gopkg.in/yaml.v3"
 )
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -36,8 +33,8 @@ type PingResponse struct {
 }
 
 type PoolResponse struct {
-	Cur int32 `json:"cur"`
-	Max int32 `json:"max"`
+	Cur int `json:"cur"`
+	Max int `json:"max"`
 }
 
 type SchemaResponse struct {
@@ -146,7 +143,7 @@ func (p *plugin) AddHandlers(ctx context.Context, provider Provider) error {
 
 func (p *plugin) ServePing(w http.ResponseWriter, req *http.Request) {
 	// Get a connection
-	conn := p.Get(req.Context())
+	conn := p.Get()
 	if conn == nil {
 		router.ServeError(w, http.StatusBadGateway, "No connection")
 		return
@@ -161,7 +158,7 @@ func (p *plugin) ServePing(w http.ResponseWriter, req *http.Request) {
 	response.Version = sqlite3.Version()
 	response.Schemas = append(response.Schemas, conn.Schemas()...)
 	response.Modules = append(response.Modules, conn.Modules()...)
-	response.Pool = PoolResponse{Cur: p.Cur(), Max: p.Max()}
+	response.Pool = PoolResponse{Cur: p.pool.Cur(), Max: p.pool.Max()}
 
 	// Serve response
 	router.ServeJSON(w, response, http.StatusOK, 2)
@@ -172,7 +169,7 @@ func (p *plugin) ServeSchema(w http.ResponseWriter, req *http.Request) {
 	params := router.RequestParams(req)
 
 	// Get a connection
-	conn := p.Get(req.Context())
+	conn := p.Get()
 	if conn == nil {
 		router.ServeError(w, http.StatusBadGateway, "No connection")
 		return
@@ -240,19 +237,18 @@ func (p *plugin) ServeTable(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Get a connection
-	conn := p.Get(req.Context())
+	conn := p.Get()
 	if conn == nil {
 		router.ServeError(w, http.StatusBadGateway, "No connection")
 		return
 	}
 	defer p.Put(conn)
 
-	// Check for schema
+	// Check for schema and table
 	if !stringSliceContainsElement(conn.Schemas(), params[0]) {
 		router.ServeError(w, http.StatusNotFound, "Schema not found", strconv.Quote(params[0]))
 		return
-	}
-	if !stringSliceContainsElement(conn.Tables(params[0]), params[1]) {
+	} else if !stringSliceContainsElement(conn.Tables(params[0]), params[1]) {
 		router.ServeError(w, http.StatusNotFound, "Table not found", strconv.Quote(params[1]))
 		return
 	}
@@ -294,7 +290,7 @@ func (p *plugin) ServeTokenizer(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Get a connection
-	conn := p.Get(req.Context())
+	conn := p.Get()
 	if conn == nil {
 		router.ServeError(w, http.StatusBadGateway, "No connection")
 		return
@@ -327,7 +323,7 @@ func (p *plugin) ServeQuery(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Get a connection
-	conn := p.Get(req.Context())
+	conn := p.Get()
 	if conn == nil {
 		router.ServeError(w, http.StatusBadGateway, "No connection")
 		return

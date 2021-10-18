@@ -1,7 +1,6 @@
 package sqlite3
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"regexp"
@@ -29,23 +28,23 @@ import (
 type PoolConfig struct {
 	Max     int32             `yaml:"max"`       // The maximum number of connections in the pool
 	Schemas map[string]string `yaml:"databases"` // Schema names mapped onto path for database file
-	Trace   bool              `yaml:"trace"`     // Profiling for statements
 	Create  bool              `yaml:"create"`    // When false, do not allow creation of new file-based databases
 	Auth    SQAuth            // Authentication and Authorization interface
+	Trace   TraceFunc         // Trace function
 	Flags   SQFlag            // Flags for opening connections
 }
 
 // Pool is a connection pool object
 type Pool struct {
-	sync.WaitGroup
-	sync.Pool
-	PoolConfig
-
-	errs   chan<- error
-	ctx    context.Context
-	cancel context.CancelFunc
-	n      int32
+	cfg   PoolConfig   // The configuration for the pool
+	pool  sync.Pool    // The pool of connections
+	errs  chan<- error // Errors are sent to this channel
+	n     int32        // The number of connections in the pool
+	drain int32        // Pool is draining (boolean)
 }
+
+// TraceFunc is a function that is called when a statement is executed or prepared
+type TraceFunc func(q string, delta time.Duration)
 
 ////////////////////////////////////////////////////////////////////////////////
 // GLOBALS
@@ -53,13 +52,53 @@ type Pool struct {
 var (
 	reSchemaName      = regexp.MustCompile("^[a-zA-Z][a-zA-Z0-9_-]+$")
 	defaultPoolConfig = PoolConfig{
-		Max:     5,
-		Trace:   false,
-		Create:  true,
-		Schemas: map[string]string{DefaultSchema: defaultMemory},
-		Flags:   SQFlag(sqlite3.SQLITE_OPEN_CREATE) | SQFlag(sqlite3.SQLITE_OPEN_SHAREDCACHE) | SQLITE_OPEN_CACHE,
+		Max:    5,
+		Create: true,
+		Flags:  SQFlag(sqlite3.SQLITE_OPEN_CREATE) | SQFlag(sqlite3.SQLITE_OPEN_SHAREDCACHE) | SQLITE_OPEN_CACHE,
 	}
 )
+
+////////////////////////////////////////////////////////////////////////////////
+// CONFIGURATION OPTIONS
+
+// Create a new default configuraiton for the pool
+func NewConfig() PoolConfig {
+	cfg := defaultPoolConfig
+	cfg.Schemas = map[string]string{DefaultSchema: defaultMemory}
+	return cfg
+}
+
+// Enable authentication and authorization
+func (cfg PoolConfig) WithAuth(auth SQAuth) PoolConfig {
+	cfg.Auth = auth
+	return cfg
+}
+
+// Enable trace of statement execution
+func (cfg PoolConfig) WithTrace(fn TraceFunc) PoolConfig {
+	cfg.Trace = fn
+	return cfg
+}
+
+// Enable or disable creation of database files
+func (cfg PoolConfig) WithCreate(create bool) PoolConfig {
+	cfg.Create = create
+	return cfg
+}
+
+// Set maxmimum concurrent connections
+func (cfg PoolConfig) WithMaxConnections(n int) PoolConfig {
+	if n >= 0 {
+		cfg.Max = int32(n)
+	}
+	return cfg
+}
+
+// Add schema to the pool
+func (cfg PoolConfig) WithSchema(name, path string) PoolConfig {
+	cfg.Schemas[name] = path
+	return cfg
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // LIFECYCLE
@@ -68,7 +107,7 @@ var (
 // size of 5 connections. If filename is not empty, this database is opened
 // or else memory is used. Pass a channel to receive errors, or nil to ignore
 func NewPool(path string, errs chan<- error) (*Pool, error) {
-	cfg := defaultPoolConfig
+	cfg := NewConfig()
 	if path != "" {
 		cfg.Schemas = map[string]string{DefaultSchema: path}
 	}
@@ -100,8 +139,9 @@ func OpenPool(config PoolConfig, errs chan<- error) (*Pool, error) {
 	}
 
 	// Set up pool
-	p.PoolConfig = config
-	p.Pool = sync.Pool{New: func() interface{} {
+	p.cfg = config
+	p.errs = errs
+	p.pool = sync.Pool{New: func() interface{} {
 		if conn, errs := p.new(); errs != nil {
 			p.err(errs)
 			return nil
@@ -109,14 +149,13 @@ func OpenPool(config PoolConfig, errs chan<- error) (*Pool, error) {
 			return conn
 		}
 	}}
-	p.errs = errs
-	p.ctx, p.cancel = context.WithCancel(context.Background())
 
 	// Create a single connection and put in the pool
 	if conn, errs := p.new(); errs != nil {
 		return nil, errs
 	} else {
-		p.Pool.Put(conn)
+		p.Put(conn)
+		p.n = 0
 	}
 
 	// Return success
@@ -126,14 +165,21 @@ func OpenPool(config PoolConfig, errs chan<- error) (*Pool, error) {
 // Close waits for all connections to be released and then
 // releases resources
 func (p *Pool) Close() error {
-	// Set max to 0 to prevent new connections, send cancel signal to all workers
-	// and wait for them to exit
-	p.SetMax(0)
-	p.cancel()
-	p.Wait()
+	// Drain the pool
+	atomic.StoreInt32(&p.drain, 1)
 
-	// Return success
-	return nil
+	var result error
+	for {
+		conn := p.pool.Get()
+		if conn == nil {
+			break
+		} else if err := conn.(*Conn).Close(); err != nil {
+			result = multierror.Append(result, err)
+		}
+	}
+
+	// Return any errors
+	return result
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -142,10 +188,10 @@ func (p *Pool) Close() error {
 func (p *Pool) String() string {
 	str := "<pool"
 	str += fmt.Sprintf(" ver=%q", Version())
+	str += fmt.Sprint(" flags=", p.cfg.Flags)
 	str += fmt.Sprint(" cur=", p.Cur())
 	str += fmt.Sprint(" max=", p.Max())
-	str += fmt.Sprint(" flags=", p.Flags)
-	for schema := range p.Schemas {
+	for schema := range p.cfg.Schemas {
 		str += fmt.Sprintf(" <schema %s=%q>", strings.TrimSpace(schema), p.pathForSchema(schema))
 	}
 	return str + ">"
@@ -154,77 +200,57 @@ func (p *Pool) String() string {
 ////////////////////////////////////////////////////////////////////////////////
 // PUBLIC METHODS
 
-// Max returns the maximum number of connections allowed
-func (p *Pool) Max() int32 {
-	return atomic.LoadInt32(&p.PoolConfig.Max)
-}
-
-// SetMax allowed connections released from pool. Note this does not change
-// the maximum instantly, it will settle to this value over time. Set as value
-// zero to disable opening new connections
-func (p *Pool) SetMax(n int32) {
-	atomic.StoreInt32(&p.PoolConfig.Max, maxInt32(n, 0))
-}
-
-// Cur returns the current number of used connections
-func (p *Pool) Cur() int32 {
-	return atomic.LoadInt32(&p.n)
-}
-
-// Get a connection from the pool, and return it to the pool when the context
-// is cancelled or it is put back using the Put method. If there are no
-// connections available, nil is returned.
-func (p *Pool) Get(ctx context.Context) SQConnection {
-	// Return error if maximum number of connections has been reached
-	if p.Cur() >= p.Max() {
-		p.err(ErrChannelBlocked.Withf("Maximum number of connections (%d) reached", p.Max()))
-		return nil
-	}
-
-	// Get a connection from the pool, add one to counter
-	conn := p.Pool.Get().(*Conn)
-	if conn == nil {
-		return nil
-	}
-	if conn.c != nil {
-		panic("Expected conn.c to be nil")
-	}
-	atomic.AddInt32(&p.n, 1)
-	conn.c = make(chan struct{})
-
-	// Release the connection in the background
-	p.WaitGroup.Add(1)
-	go func() {
-		defer p.WaitGroup.Done()
-		select {
-		case <-ctx.Done():
-			p.put(conn)
-		case <-conn.c:
-			p.put(conn)
-		case <-p.ctx.Done():
-			p.put(conn)
-		}
-	}()
-
-	// Return the connection
-	return conn
-}
-
-// Return connection to the pool
-func (p *Pool) Put(conn SQConnection) {
-	if conn, ok := conn.(*Conn); ok {
-		conn.c <- struct{}{}
+func (p *Pool) Get() SQConnection {
+	if conn, ok := p.pool.Get().(SQConnection); ok {
+		// Increment counter of open connections
+		atomic.AddInt32(&p.n, 1)
+		return conn
 	} else {
-		panic(ErrBadParameter.With("Put"))
+		return nil
+	}
+}
+
+func (p *Pool) Put(conn SQConnection) {
+	if conn != nil {
+		// Decrement counter of open connections
+		atomic.AddInt32(&p.n, -1)
+		p.pool.Put(conn)
+	}
+}
+
+// Return number of "checked out" (used) connections
+func (p *Pool) Cur() int {
+	return int(atomic.LoadInt32(&p.n))
+}
+
+// Return maximum allowed connections
+func (p *Pool) Max() int {
+	return int(p.cfg.Max)
+}
+
+// Set maximum number of "checked out" connections
+func (p *Pool) SetMax(n int) {
+	if n == 0 {
+		p.cfg.Max = defaultPoolConfig.Max
+	} else {
+		p.cfg.Max = maxInt32(int32(n), 1)
 	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // PRIVATE METHODS
 
-// Create a new connection and attach databases, returns error if unable to
-// complete operation
-func (p *Pool) new() (*Conn, error) {
+func (p *Pool) new() (SQConnection, error) {
+	// If pool is being drained, return nil
+	if atomic.LoadInt32(&p.drain) != 0 {
+		return nil, nil
+	}
+
+	// If cur >= max, then reject
+	if p.cfg.Max != 0 && atomic.LoadInt32(&p.n) >= p.cfg.Max {
+		return nil, ErrChannelBlocked.Withf("Maximum number of connections reached (%d)", p.cfg.Max)
+	}
+
 	// Open connection to main schema, which is required
 	defaultPath := p.pathForSchema(DefaultSchema)
 	if defaultPath == "" {
@@ -232,7 +258,7 @@ func (p *Pool) new() (*Conn, error) {
 	}
 
 	// Always allow memory databases to be created and read/write
-	flags := p.Flags
+	flags := p.cfg.Flags
 	if defaultPath == defaultMemory {
 		flags |= SQFlag(sqlite3.SQLITE_OPEN_CREATE | sqlite3.SQLITE_OPEN_READWRITE)
 	}
@@ -244,7 +270,7 @@ func (p *Pool) new() (*Conn, error) {
 	}
 
 	// Set trace
-	if p.PoolConfig.Trace {
+	if p.cfg.Trace != nil {
 		conn.ConnEx.SetTraceHook(func(_ sqlite3.TraceType, a, b unsafe.Pointer) int {
 			p.trace(conn, (*sqlite3.Statement)(a), *(*int64)(b))
 			return 0
@@ -253,7 +279,7 @@ func (p *Pool) new() (*Conn, error) {
 
 	// Attach additional databases
 	var result error
-	for schema := range p.Schemas {
+	for schema := range p.cfg.Schemas {
 		schema = strings.TrimSpace(schema)
 		path := p.pathForSchema(schema)
 		if schema == DefaultSchema {
@@ -267,7 +293,7 @@ func (p *Pool) new() (*Conn, error) {
 	}
 
 	// Set auth
-	if p.PoolConfig.Auth != nil {
+	if p.cfg.Auth != nil {
 		conn.SetAuthorizerHook(func(action sqlite3.SQAction, args [4]string) sqlite3.SQAuth {
 			if err := p.auth(conn.ctx, action, args); err == nil {
 				return sqlite3.SQLITE_ALLOW
@@ -287,49 +313,15 @@ func (p *Pool) new() (*Conn, error) {
 	return conn, nil
 }
 
-func (p *Pool) put(conn *Conn) {
-	if conn.c == nil {
-		panic("Expected conn.c to be non-nil")
-	}
-
-	// Close channel
-	close(conn.c)
-	conn.c = nil
-
-	// Choose to put back into pool or close connection
-	n := atomic.AddInt32(&p.n, -1)
-	if n < p.Max() {
-		p.Pool.Put(conn)
-		return
-	}
-
-	// Close connection and remove from cache
-	if err := conn.Close(); err != nil {
-		p.err(err)
-	}
-}
-
-// pathForSchema returns the path for the specified schema
-// or an empty string if the schema name is not valid
-func (p *Pool) pathForSchema(schema string) string {
-	if schema == "" {
-		return p.pathForSchema(DefaultSchema)
-	} else if !reSchemaName.MatchString(schema) {
-		return ""
-	} else if path, exists := p.Schemas[schema]; !exists {
-		return ""
-	} else {
-		return path
-	}
-}
-
 // err will pass an error to a channel unless channel is blocked
 func (p *Pool) err(err error) {
-	select {
-	case p.errs <- err:
-		return
-	default:
-		return
+	if p.errs != nil {
+		select {
+		case p.errs <- err:
+			return
+		default:
+			return
+		}
 	}
 }
 
@@ -357,11 +349,11 @@ func (p *Pool) attach(conn *Conn, schema, path string) error {
 
 // Create a database before attaching
 func (p *Pool) attachCreate(path string) error {
-	if p.PoolConfig.Flags&SQFlag(sqlite3.SQLITE_OPEN_CREATE) == 0 {
+	if p.cfg.Flags&SQFlag(sqlite3.SQLITE_OPEN_CREATE) == 0 {
 		return ErrBadParameter.Withf("Database does not exist: %q", path)
 	}
 	// Open then close database before attaching
-	if conn, err := sqlite3.OpenPath(path, sqlite3.OpenFlags(p.PoolConfig.Flags), ""); err != nil {
+	if conn, err := sqlite3.OpenPath(path, sqlite3.OpenFlags(p.cfg.Flags), ""); err != nil {
 		return err
 	} else if err := conn.Close(); err != nil {
 		return err
@@ -370,15 +362,23 @@ func (p *Pool) attachCreate(path string) error {
 	}
 }
 
-// Trace
-func (p *Pool) trace(c *Conn, s *sqlite3.Statement, ns int64) {
-	fmt.Printf("TRACE %q => %v\n", s, time.Duration(ns)*time.Nanosecond)
+// pathForSchema returns the path for the specified schema
+// or an empty string if the schema name is not valid
+func (p *Pool) pathForSchema(schema string) string {
+	if schema == "" {
+		return p.pathForSchema(DefaultSchema)
+	} else if !reSchemaName.MatchString(schema) {
+		return ""
+	} else if path, exists := p.cfg.Schemas[schema]; !exists {
+		return ""
+	} else {
+		return path
+	}
 }
 
-// maxInt32 returns the maximum of two values
-func maxInt32(a, b int32) int32 {
-	if a > b {
-		return a
+// Trace
+func (p *Pool) trace(c *Conn, s *sqlite3.Statement, ns int64) {
+	if p.cfg.Trace != nil {
+		p.cfg.Trace(s.SQL(), time.Duration(ns)*time.Nanosecond)
 	}
-	return b
 }

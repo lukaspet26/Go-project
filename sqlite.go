@@ -17,6 +17,8 @@ const (
 type (
 	SQAuthFlag uint32
 	SQFlag     uint32
+	SQTxnFunc  func(SQTransaction) error
+	SQExecFunc func(row, col []string) bool
 )
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -27,24 +29,22 @@ type SQPool interface {
 	// Close waits for all connections to be released and then releases resources
 	Close() error
 
-	// Get a connection from the pool, and return it to the pool when the context
-	// is cancelled or it is put back using the Put method. If there are no
+	// Get a connection from the pool. If there are no
 	// connections available or an error occurs, nil is returned.
-	Get(context.Context) SQConnection
+	Get() SQConnection
 
 	// Return connection to the pool
 	Put(SQConnection)
 
 	// Cur returns the current number of used connections
-	Cur() int32
+	Cur() int
 
-	// Max returns the maximum number of connections allowed
-	Max() int32
+	// Max returns the maximum allowed number of used connections
+	Max() int
 
 	// SetMax allowed connections released from pool. Note this does not change
-	// the maximum instantly, it will settle to this value over time. Set as value
-	// zero to disable opening new connections
-	SetMax(int32)
+	// the maximum instantly, it will settle to this value over time.
+	SetMax(int)
 }
 
 // SQConnection is an sqlite connection to one or more databases
@@ -54,6 +54,9 @@ type SQConnection interface {
 	// Execute a transaction with context, rollback on any errors
 	// or cancelled context
 	Do(context.Context, SQFlag, func(SQTransaction) error) error
+
+	// Execute a statement outside transacton
+	Exec(SQStatement, SQExecFunc) error
 }
 
 // SQTransaction is an sqlite transaction
