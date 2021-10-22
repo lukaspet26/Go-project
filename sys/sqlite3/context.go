@@ -1,7 +1,15 @@
 package sqlite3
 
+import (
+	"math"
+	"reflect"
+	"unsafe"
+)
+
+///////////////////////////////////////////////////////////////////////////////
+// CGO
+
 /*
-#cgo pkg-config: sqlite3
 #include <sqlite3.h>
 #include <stdlib.h>
 
@@ -21,11 +29,6 @@ void _sqlite3_result_blob64(sqlite3_context* ctx, void* data, sqlite3_uint64 len
 
 */
 import "C"
-import (
-	"math"
-	"reflect"
-	"unsafe"
-)
 
 ///////////////////////////////////////////////////////////////////////////////
 // TYPES

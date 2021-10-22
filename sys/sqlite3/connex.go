@@ -1,7 +1,20 @@
 package sqlite3
 
+import (
+	"errors"
+	"reflect"
+	"sync"
+	"time"
+	"unsafe"
+
+	// Modules
+	"github.com/hashicorp/go-multierror"
+)
+
+///////////////////////////////////////////////////////////////////////////////
+// CGO
+
 /*
-#cgo pkg-config: sqlite3
 #include <sqlite3.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -48,18 +61,6 @@ static inline int _sqlite3_trace_v2(sqlite3* db, unsigned mask, uintptr_t userIn
 
 */
 import "C"
-
-import (
-	"errors"
-	"io"
-	"reflect"
-	"sync"
-	"time"
-	"unsafe"
-
-	// Modules
-	"github.com/hashicorp/go-multierror"
-)
 
 ///////////////////////////////////////////////////////////////////////////////
 // TYPES
@@ -378,11 +379,9 @@ func (c *ConnEx) ExecEx(q string, fn ExecFunc, v ...interface{}) error {
 
 		// Result loop
 		for {
-			row, err := r.Next(t...)
-			if errors.Is(err, io.EOF) || row == nil {
+			row := r.Next(t...)
+			if row == nil {
 				break
-			} else if err != nil {
-				return err
 			} else if fn != nil {
 				if fn(stringSliceFromInterface(row, v), n) {
 					// Set abort transaction on next iteration

@@ -61,6 +61,9 @@ type SQConnection interface {
 
 // SQTransaction is an sqlite transaction
 type SQTransaction interface {
+	Lock()
+	Unlock()
+
 	// Query and return a set of results
 	Query(SQStatement, ...interface{}) (SQResults, error)
 
@@ -104,10 +107,10 @@ type SQResults interface {
 	// if types are provided, then returned row is cast to
 	// appopriate types. The returned row needs to be copied
 	// if not transient
-	Next(...reflect.Type) ([]interface{}, error)
+	Next(...reflect.Type) []interface{}
 
-	// Return next map of values, or nil if no more rows
-	//NextMap() map[string]interface{}
+	// Close results and discard when done
+	Close() error
 
 	// NextQuery executes the next query or returns io.EOF
 	NextQuery(...interface{}) error

@@ -1,7 +1,9 @@
 package sqlite3
 
+///////////////////////////////////////////////////////////////////////////////
+// CGO
+
 /*
-#cgo pkg-config: sqlite3
 #include <sqlite3.h>
 #include <stdlib.h>
 */

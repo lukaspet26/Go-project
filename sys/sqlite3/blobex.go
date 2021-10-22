@@ -1,16 +1,18 @@
 package sqlite3
 
-/*
-#cgo pkg-config: sqlite3
-#include <sqlite3.h>
-#include <stdlib.h>
-*/
-import "C"
-
 import (
 	"fmt"
 	"io"
 )
+
+///////////////////////////////////////////////////////////////////////////////
+// CGO
+
+/*
+#include <sqlite3.h>
+#include <stdlib.h>
+*/
+import "C"
 
 ///////////////////////////////////////////////////////////////////////////////
 // TYPES

@@ -5,12 +5,12 @@ package sqlite
 
 // SQStatement is any statement which can be prepared or executed
 type SQStatement interface {
+	SQExpr
 	Query() string
 }
 
 // SQSource defines a table or column name
 type SQSource interface {
-	SQStatement
 	SQExpr
 
 	// Return name, schema, type
@@ -39,6 +39,7 @@ type SQSource interface {
 	CreateTable(...SQColumn) SQTable
 	CreateVirtualTable(string, ...string) SQIndexView
 	CreateIndex(string, ...string) SQIndexView
+	CreateTrigger(string, ...SQStatement) SQTrigger
 	//CreateView(SQSelect, ...string) SQIndexView
 	ForeignKey(...string) SQForeignKey
 
@@ -48,6 +49,15 @@ type SQSource interface {
 	// Update and delete data
 	Update(...string) SQUpdate
 	Delete(...interface{}) SQStatement
+}
+
+// SQJoin defines one or more joins
+type SQJoin interface {
+	SQExpr
+
+	Join(...SQExpr) SQJoin
+	LeftJoin(...SQExpr) SQJoin
+	LeftInnerJoin(...SQExpr) SQJoin
 }
 
 // SQTable defines a table of columns and indexes
@@ -95,6 +105,21 @@ type SQIndexView interface {
 	WithAuto() SQIndexView
 }
 
+// SQTrigger defines a create trigger statement
+type SQTrigger interface {
+	SQStatement
+
+	// Modifiers
+	IfNotExists() SQTrigger
+	WithTemporary() SQTrigger
+	Before() SQTrigger
+	After() SQTrigger
+	InsteadOf() SQTrigger
+	Delete() SQTrigger
+	Insert() SQTrigger
+	Update(...string) SQTrigger
+}
+
 // SQDrop defines a drop for tables, views, indexes, and triggers
 type SQDrop interface {
 	SQStatement
@@ -119,8 +144,8 @@ type SQSelect interface {
 	WithDistinct() SQSelect
 	WithLimitOffset(limit, offset uint) SQSelect
 
-	// Destination columns for results
-	To(...SQSource) SQSelect
+	// Destination expressions for results
+	To(...SQExpr) SQSelect
 
 	// Where and order clauses
 	Where(...interface{}) SQSelect
@@ -144,7 +169,7 @@ type SQForeignKey interface {
 
 // SQColumn represents a column definition
 type SQColumn interface {
-	SQStatement
+	SQExpr
 
 	// Properties
 	Name() string
@@ -164,13 +189,7 @@ type SQColumn interface {
 
 // SQExpr defines any expression
 type SQExpr interface {
-	SQStatement
-
-	// And, Or, Not
-	Or(interface{}) SQExpr
-
-	// Comparison expression with one or more right hand side expressions
-	//Is(SQExpr, ...SQExpr) SQComparison
+	String() string
 }
 
 // SQComparison defines a comparison between two expressions

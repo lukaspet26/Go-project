@@ -2,8 +2,6 @@ package sqlite3_test
 
 import (
 	"context"
-	"errors"
-	"io"
 	"math/rand"
 	"sync"
 	"testing"
@@ -26,12 +24,14 @@ func Test_Cache_001(t *testing.T) {
 
 	// Perform caching in a transaction
 	conn.Do(context.Background(), 0, func(txn SQTransaction) error {
-		// SELECT n between 0-9 over 100 executions in parallel should
+		// SELECT n between 0-9 over 1000 executions in parallel should
 		// return the same result, with a perfect cache hit rate of 9 in 10?
 		var wg sync.WaitGroup
-		for i := 0; i < 20; i++ {
+		for i := 0; i < 1000; i++ {
 			wg.Add(1)
 			go func() {
+				txn.Lock()
+				defer txn.Unlock()
 				defer wg.Done()
 				n := rand.Uint32() % 10
 				r, err := txn.Query(Q("SELECT ", n))
@@ -39,18 +39,15 @@ func Test_Cache_001(t *testing.T) {
 					t.Error("Query Error: ", err)
 					return
 				}
+				defer r.Close()
 				for {
-					row, err := r.Next()
-					if errors.Is(err, io.EOF) {
+					row := r.Next()
+					if row == nil {
 						break
-					} else if err != nil {
-						t.Error("Next Error: ", err)
 					} else if len(row) != 1 {
-						t.Error("Unexpected row length: ", row)
+						t.Error("Unexpected row length: ", row, " expected [", n, "]", r.Columns())
 					} else if int64(n) != row[0] {
-						t.Error("Unexpected row value: ", row, " expected [", n, "]")
-					} else {
-						t.Log(n, "=>", row[0])
+						t.Error("Unexpected row value: ", row, " expected [", n, "]", r.Columns())
 					}
 				}
 			}()

@@ -2,11 +2,9 @@ package indexer
 
 import (
 	"fmt"
+	"io/fs"
 	"path/filepath"
 	"sync"
-	// Package imports
-	// Import namepaces
-	//. "github.com/djthorpe/go-errors"
 )
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -19,12 +17,13 @@ type Queue struct {
 }
 
 type QueueEvent struct {
-	Event
+	EventType
 	Name string
 	Path string
+	Info fs.FileInfo
 }
 
-type Event uint
+type EventType uint
 
 ///////////////////////////////////////////////////////////////////////////////
 // GLOBALS
@@ -34,16 +33,23 @@ const (
 )
 
 const (
-	EventNone Event = iota
+	EventNone EventType = iota
 	EventAdd
 	EventRemove
+	EventReindexStarted
+	EventReindexCompleted
 )
 
 ///////////////////////////////////////////////////////////////////////////////
 // LIFECYCLE
 
+// Create a new queue with default capacity
+func NewQueue() *Queue {
+	return NewQueueWithCapacity(0)
+}
+
 // Create a new queue which acts as a buffer between the file indexing
-// and the rendering which can be slower than the file indexing
+// and the processng/rendering which can be slower than the file indexing
 func NewQueueWithCapacity(cap int) *Queue {
 	q := new(Queue)
 
@@ -73,16 +79,25 @@ func (this *Queue) String() string {
 ///////////////////////////////////////////////////////////////////////////////
 // PUBLIC METHODS
 
+// Indicate reindexing in progress or completed
+func (q *Queue) Mark(name, path string, flag bool) {
+	if flag {
+		q.add(EventReindexStarted, name, path, nil)
+	} else {
+		q.add(EventReindexCompleted, name, path, nil)
+	}
+}
+
 // Add an item to the queue. If the item is already in the queue,
 // then it is bumped to the end of the queue
-func (q *Queue) Add(name, path string) {
+func (q *Queue) Add(name, path string, info fs.FileInfo) {
 	if elem := q.Get(name, path); elem != nil {
 		// Remove the element from the existing queue
 		q.del(name, path)
 	}
 
 	// Add the element to the queue
-	q.add(EventAdd, name, path)
+	q.add(EventAdd, name, path, info)
 }
 
 // Remove an item to the queue. If the item is already in the queue,
@@ -94,7 +109,7 @@ func (q *Queue) Remove(name, path string) {
 	}
 
 	// Add the element to the queue
-	q.add(EventRemove, name, path)
+	q.add(EventRemove, name, path, nil)
 }
 
 // Return a queue event from the queue, or nil
@@ -136,7 +151,7 @@ func (q *Queue) Count() int {
 ///////////////////////////////////////////////////////////////////////////////
 // PRIVATE METHODS
 
-func (q *Queue) add(e Event, name, path string) {
+func (q *Queue) add(e EventType, name, path string, info fs.FileInfo) {
 	q.RWMutex.Lock()
 	defer q.RWMutex.Unlock()
 	// This assumes the key does not exist
@@ -145,7 +160,7 @@ func (q *Queue) add(e Event, name, path string) {
 		panic("Queue: key already exists")
 	}
 	q.q = append(q.q, key)
-	q.k[key] = &QueueEvent{e, name, path}
+	q.k[key] = &QueueEvent{e, name, path, info}
 }
 
 func (q *Queue) del(name, path string) {

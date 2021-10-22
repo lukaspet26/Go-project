@@ -23,10 +23,11 @@ import (
 
 type Indexer struct {
 	*walkfs.WalkFS
-	*Queue
-	name string
-	path string
-	walk chan WalkFunc
+	queue    *Queue
+	name     string
+	path     string
+	walk     chan WalkFunc
+	indexing bool
 }
 
 // WalkFunc is called after a reindexing with any walk errors
@@ -48,10 +49,9 @@ var (
 // LIFECYCLE
 
 // Create a new indexer with an identifier, path to the root of the indexer
-// and a channel to receive any errors
-func NewIndexer(name, path string) (*Indexer, error) {
+// and a queue
+func NewIndexer(name, path string, queue *Queue) (*Indexer, error) {
 	this := new(Indexer)
-	this.Queue = NewQueueWithCapacity(defaultCapacity)
 	this.WalkFS = walkfs.New(this.visit)
 
 	// Check path argument
@@ -68,6 +68,13 @@ func NewIndexer(name, path string) (*Indexer, error) {
 		this.path = abspath
 	}
 
+	// Check queue argument
+	if queue == nil {
+		this.queue = NewQueue()
+	} else {
+		this.queue = queue
+	}
+
 	// Channel to indicate we want to walk the index
 	this.walk = make(chan WalkFunc)
 
@@ -75,7 +82,7 @@ func NewIndexer(name, path string) (*Indexer, error) {
 	return this, nil
 }
 
-// run indexer
+// run indexer, provider channel to receive errors
 func (i *Indexer) Run(ctx context.Context, errs chan<- error) error {
 	var walking sync.Mutex
 
@@ -99,6 +106,15 @@ FOR_LOOP:
 			walking.Lock()
 			go func() {
 				defer walking.Unlock()
+
+				// Indicate reindexing is in progress
+				i.indexing = true
+				i.queue.Mark(i.name, i.path, true)
+				defer func() {
+					i.queue.Mark(i.name, i.path, false)
+					i.indexing = false
+				}()
+
 				// Start the walk and return any errors
 				fn(i.WalkFS.Walk(ctx, i.path))
 			}()
@@ -141,15 +157,22 @@ func (i *Indexer) Path() string {
 	return i.path
 }
 
+// Return the queue
+func (i *Indexer) Queue() *Queue {
+	return i.queue
+}
+
+// Return true if indexing
+func (i *Indexer) IsIndexing() bool {
+	return i.indexing
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // PUBLIC METHODS
 
 // Walk will initiate a walk of the index, and block until context is
 // cancelled or walk is started
 func (i *Indexer) Walk(ctx context.Context, fn WalkFunc) error {
-	if fn == nil {
-		return ErrBadParameter.With("WalkFunc")
-	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -173,15 +196,15 @@ func (i *Indexer) event(ctx context.Context, evt notify.EventInfo) error {
 	case notify.Create, notify.Write:
 		info, err := os.Stat(evt.Path())
 		if err == nil && info.Mode().IsRegular() && i.ShouldVisit(relpath, info) {
-			i.Queue.Add(i.name, relpath)
+			i.queue.Add(i.name, relpath, info)
 		}
 	case notify.Remove, notify.Rename:
 		info, err := os.Stat(evt.Path())
 		if err == nil && info.Mode().IsRegular() && i.ShouldVisit(relpath, info) {
-			i.Queue.Add(i.name, relpath)
+			i.queue.Add(i.name, relpath, info)
 		} else {
 			// Always attempt removal from index
-			i.Queue.Remove(i.name, relpath)
+			i.queue.Remove(i.name, relpath)
 		}
 	}
 	// Return success
@@ -191,7 +214,7 @@ func (i *Indexer) event(ctx context.Context, evt notify.EventInfo) error {
 // visit is used to index a file from the indexer
 func (i *Indexer) visit(ctx context.Context, abspath, relpath string, info fs.FileInfo) error {
 	if info.Mode().IsRegular() {
-		i.Queue.Add(i.name, relpath)
+		i.queue.Add(i.name, relpath, info)
 	}
 	return nil
 }

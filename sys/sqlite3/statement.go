@@ -1,7 +1,16 @@
 package sqlite3
 
+import (
+	"fmt"
+	"unsafe"
+
+	multierror "github.com/hashicorp/go-multierror"
+)
+
+///////////////////////////////////////////////////////////////////////////////
+// CGO
+
 /*
-#cgo pkg-config: sqlite3
 #include <stdlib.h>
 #include <sqlite3.h>
 #include <pthread.h>
@@ -94,13 +103,6 @@ static int _sqlite3_blocking_prepare_v2(
 }
 */
 import "C"
-
-import (
-	"fmt"
-	"unsafe"
-
-	multierror "github.com/hashicorp/go-multierror"
-)
 
 ///////////////////////////////////////////////////////////////////////////////
 // TYPES
@@ -214,7 +216,7 @@ func (s *Statement) Conn() *Conn {
 func (s *Statement) Reset() error {
 	err := SQError(C.sqlite3_reset((*C.sqlite3_stmt)(s)))
 	if (err & 0xFF) == SQLITE_LOCKED {
-		fmt.Println("Locked")
+		fmt.Println("TODO: Locked")
 	}
 	if err != SQLITE_OK {
 		return err.With(C.GoString(C.sqlite3_errmsg((*C.sqlite3)(s.Conn()))))
@@ -253,7 +255,7 @@ func (s *Statement) Finalize() error {
 func (s *Statement) Step() error {
 	err := SQError(C._sqlite3_blocking_step((*C.sqlite3_stmt)(s)))
 	if (err & 0xFF) == SQLITE_LOCKED {
-		fmt.Println("Locked (Step)")
+		fmt.Println("TODO Locked (Step)")
 	}
 	return err
 }

@@ -13,27 +13,6 @@ This package is part of a wider project, `github.com/mutablelogic/go-sqlite`.
 Please see the [module documentation](https://github.com/mutablelogic/go-sqlite/blob/master/README.md)
 for more information.
 
-## Building
-
-Unlike some of the other bindings I have seen, these do not include a full
-copy of __sqlite__ as part of the build process, but expect a `pkgconfig`
-file called `sqlite.pc` to be present (and an existing set of header
-files and libraries to be available to link against, of course).
-
-In order to locate the __pkgconfig__ file in a non-standard location, use
-the `PKG_CONFIG_PATH` environment variable. For example, I have installed
-sqlite using `brew install sqlite` and this is how I run the tests:
-
-```bash
-[bash] git clone git@github.com:djthorpe/go-sqlite.git
-[bash] cd go-sqlite
-[bash] go mod tidy
-[bash] PKG_CONFIG_PATH="/usr/local/opt/sqlite/lib/pkgconfig" go test -v ./sys/sqlite3
-```
-
-There are some examples in the `cmd` folder of the main repository on how to use
-the bindings, and various pseudo examples in this document.
-
 ## Contributing & Distribution
 
 Please do file feature requests and bugs [here](https://github.com/mutablelogic/go-sqlite/issues).
@@ -253,16 +232,14 @@ func main() {
 ## Results
 
 Results are returned from the `Exec` method after a statement is executed. If there are no results,
-then a call to `func (*Results) Next() ([]interface{},error)` will return `nil` in place of an
+then a call to `func (*Results) Next() []interface{}` will return `nil` in place of an
 array of values. You should repeatedly call the `Next` method until this occurs. For example,
 
 ```go
 func ReadResults(r *Results) error {
     for {
-        row, err := r.Next()
-        if err != nil {
-            return err
-        } else if row == nil {
+        row := r.Next()
+        if row == nil {
             return nil
         }
         // Handle row
@@ -282,10 +259,8 @@ example,
 func ReadResults(r *Results) error {
     cast := []reflect.Type{ reflect.TypeOf(bool), reflect.TypeOf(uint) }
     for {
-        row, err := r.Next(cast...)
-        if err != nil {
-            return err
-        } else if row == nil {
+        row := r.Next(cast...)
+        if row == nil {
             return nil
         }
         // Handle row which has bool as first element and uint as second element

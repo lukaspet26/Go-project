@@ -2,7 +2,9 @@
 plugins:
   - build/httpserver.plugin
   - build/log.plugin
+  - build/env.plugin
   - build/sqlite3.plugin
+  - build/indexer.plugin
 
 # HTTP Server parameters
 httpserver:
@@ -14,6 +16,13 @@ handlers:
   sqlite3:
     # The sqlite3 plugin can be viewed at http://localhost/api/sqlite
     prefix: /api/sqlite
+    # Requests are logged
+    middleware:
+      - log
+
+  indexer:
+    # The indexer plugin can be viewed at http://localhost/api/indexer
+    prefix: /api/indexer
     # Requests are logged
     middleware:
       - log
@@ -31,7 +40,17 @@ sqlite3:
 
   # Set trace to true to enable the ability to profile queries. Profiling information
   # can be displayed through the API.
-  trace: true
+  trace: false
 
   # Set max number of connections that can be simultaneously opened
-  max: 5
+  max: 100
+
+
+indexer:
+  index:
+    sw: /home/djt/sw
+    tv: /home/djt/media/TV
+    films: /home/djt/media/Movies
+    music: /home/djt/media/Music
+    videos: /home/djt/media/Videos
+    media: /home/djt/media

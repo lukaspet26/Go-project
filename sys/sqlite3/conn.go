@@ -1,7 +1,21 @@
 package sqlite3
 
+import (
+	"fmt"
+	"strings"
+	"unsafe"
+
+	// Modules
+	multierror "github.com/hashicorp/go-multierror"
+
+	// Import into namespace
+	. "github.com/djthorpe/go-errors"
+)
+
+///////////////////////////////////////////////////////////////////////////////
+// CGO
+
 /*
-#cgo pkg-config: sqlite3
 #include <sqlite3.h>
 #include <stdlib.h>
 */
@@ -15,18 +29,6 @@ import "C"
 // --		return sqlite3_config(SQLITE_CONFIG_LOG, NULL, NULL);
 // --	}
 // -- }
-
-import (
-	"fmt"
-	"strings"
-	"unsafe"
-
-	// Modules
-	multierror "github.com/hashicorp/go-multierror"
-
-	// Import into namespace
-	. "github.com/djthorpe/go-errors"
-)
 
 ///////////////////////////////////////////////////////////////////////////////
 // TYPES
@@ -198,16 +200,17 @@ func (c *Conn) Close() error {
 	var result error
 
 	// Close any active statements
-	var s *Statement
+	/*var s *Statement
 	for {
 		s = c.NextStatement(s)
 		if s == nil {
 			break
 		}
+		fmt.Println("finalizing", uintptr(unsafe.Pointer(s)))
 		if err := s.Finalize(); err != nil {
 			result = multierror.Append(result, err)
 		}
-	}
+	}*/
 
 	// Close database connection
 	if err := SQError(C.sqlite3_close_v2((*C.sqlite3)(c))); err != SQLITE_OK {

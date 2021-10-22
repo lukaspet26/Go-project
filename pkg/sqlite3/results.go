@@ -33,6 +33,15 @@ func NewResults(st *sqlite3.StatementEx) *Results {
 	return r
 }
 
+func (r *Results) Close() error {
+	// Only free prepared statements if they are not cached
+	if !r.st.Cached() {
+		return r.st.Close()
+	} else {
+		return r.st.Close()
+	}
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // STRINGIFY
 
@@ -65,9 +74,9 @@ func (r *Results) NextQuery(v ...interface{}) error {
 }
 
 // Return a row from the results, or return io.EOF if all results have been consumed
-func (r *Results) Next(t ...reflect.Type) ([]interface{}, error) {
+func (r *Results) Next(t ...reflect.Type) []interface{} {
 	if r.results == nil {
-		return nil, io.EOF
+		return nil
 	} else {
 		return r.results.Next(t...)
 	}
