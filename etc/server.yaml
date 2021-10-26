@@ -4,7 +4,10 @@ plugins:
   - build/log.plugin
   - build/env.plugin
   - build/sqlite3.plugin
+  - build/renderer.plugin
   - build/indexer.plugin
+  - build/text-renderer.plugin
+  - build/markdown-renderer.plugin
 
 # HTTP Server parameters
 httpserver:
@@ -30,8 +33,7 @@ handlers:
 sqlite3:
   # Databases to load and/or create. Only the 'main' database is required.
   databases:
-    main: /tmp/test.sqlite 
-    test: ":memory:"
+    main: "/tmp/test.sqlite"
 
   # Set create to true to allow databases which don't exist to be created, or
   # else error will be reported on server start. In-memory databases can always
@@ -40,17 +42,18 @@ sqlite3:
 
   # Set trace to true to enable the ability to profile queries. Profiling information
   # can be displayed through the API.
-  trace: false
+  trace: true
 
   # Set max number of connections that can be simultaneously opened
   max: 100
 
-
 indexer:
   index:
-    sw: /home/djt/sw
+    docs: /opt/go-server/docs
+    templates: /opt/go-server/templates
     tv: /home/djt/media/TV
-    films: /home/djt/media/Movies
-    music: /home/djt/media/Music
-    videos: /home/djt/media/Videos
-    media: /home/djt/media
+
+renderer:
+  plugins:
+    - text-renderer
+    - markdown-renderer
